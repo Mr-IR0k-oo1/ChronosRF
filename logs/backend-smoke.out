@@ -1,0 +1,42 @@
+[1778320584007] [INFO] Starting SpectraGuard backend.
+[1778320584015] [WARN] Unable to launch hackrf_sweep.exe: failed to launch sweep capture process at hackrf_sweep.exe: program not found
+[1778320584016] [INFO] Processing rates: sweeps 0.00/s, peaks 0.00/s, anomalies 0.00/s, alerts 0.00/s. Totals: sweeps 0, peaks 0, anomalies 0, alerts 0, reconnects 1.
+[1778320584018] [INFO] SpectraGuard HTTP/WebSocket server listening on 127.0.0.1:9001.
+[1778320587031] [WARN] Unable to launch hackrf_sweep.exe: failed to launch sweep capture process at hackrf_sweep.exe: program not found
+[1778320591029] [WARN] Unable to launch hackrf_sweep.exe: failed to launch sweep capture process at hackrf_sweep.exe: program not found
+[1778320594028] [INFO] Processing rates: sweeps 0.00/s, peaks 0.00/s, anomalies 0.00/s, alerts 0.00/s. Totals: sweeps 0, peaks 0, anomalies 0, alerts 0, reconnects 3.
+[1778320594260] [WARN] Unable to launch hackrf_sweep.exe: failed to launch sweep capture process at hackrf_sweep.exe: program not found
+[1778320598021] [WARN] Unable to launch hackrf_sweep.exe: failed to launch sweep capture process at hackrf_sweep.exe: program not found
+[1778320602020] [WARN] Unable to launch hackrf_sweep.exe: failed to launch sweep capture process at hackrf_sweep.exe: program not found
+[1778320604022] [INFO] Processing rates: sweeps 0.00/s, peaks 0.00/s, anomalies 0.00/s, alerts 0.00/s. Totals: sweeps 0, peaks 0, anomalies 0, alerts 0, reconnects 6.
+[1778320606023] [WARN] Unable to launch hackrf_sweep.exe: failed to launch sweep capture process at hackrf_sweep.exe: program not found
+[1778320610019] [WARN] Unable to launch hackrf_sweep.exe: failed to launch sweep capture process at hackrf_sweep.exe: program not found
+[1778320614017] [WARN] Unable to launch hackrf_sweep.exe: failed to launch sweep capture process at hackrf_sweep.exe: program not found
+[1778320614019] [INFO] Processing rates: sweeps 0.00/s, peaks 0.00/s, anomalies 0.00/s, alerts 0.00/s. Totals: sweeps 0, peaks 0, anomalies 0, alerts 0, reconnects 9.
+[1778320617029] [WARN] Unable to launch hackrf_sweep.exe: failed to launch sweep capture process at hackrf_sweep.exe: program not found
+[1778320621029] [WARN] Unable to launch hackrf_sweep.exe: failed to launch sweep capture process at hackrf_sweep.exe: program not found
+[1778320624018] [INFO] Processing rates: sweeps 0.00/s, peaks 0.00/s, anomalies 0.00/s, alerts 0.00/s. Totals: sweeps 0, peaks 0, anomalies 0, alerts 0, reconnects 11.
+[1778320625022] [WARN] Unable to launch hackrf_sweep.exe: failed to launch sweep capture process at hackrf_sweep.exe: program not found
+[1778320629019] [WARN] Unable to launch hackrf_sweep.exe: failed to launch sweep capture process at hackrf_sweep.exe: program not found
+[1778320630990] [INFO] Recording telemetry to recordings\20260509\2ef922f5-f96d-4d60-952d-337aab3aee75.jsonl.
+[1778320632023] [WARN] Unable to launch hackrf_sweep.exe: failed to launch sweep capture process at hackrf_sweep.exe: program not found
+[1778320634016] [INFO] Processing rates: sweeps 0.00/s, peaks 0.00/s, anomalies 0.00/s, alerts 0.00/s. Totals: sweeps 0, peaks 0, anomalies 0, alerts 0, reconnects 14.
+[1778320635033] [WARN] Unable to launch hackrf_sweep.exe: failed to launch sweep capture process at hackrf_sweep.exe: program not found
+[1778320639023] [WARN] Unable to launch hackrf_sweep.exe: failed to launch sweep capture process at hackrf_sweep.exe: program not found
+[1778320642028] [WARN] Unable to launch hackrf_sweep.exe: failed to launch sweep capture process at hackrf_sweep.exe: program not found
+[1778320644028] [INFO] Processing rates: sweeps 0.00/s, peaks 0.00/s, anomalies 0.00/s, alerts 0.00/s. Totals: sweeps 0, peaks 0, anomalies 0, alerts 0, reconnects 17.
+[1778320646029] [WARN] Unable to launch hackrf_sweep.exe: failed to launch sweep capture process at hackrf_sweep.exe: program not found
+[1778320650027] [WARN] Unable to launch hackrf_sweep.exe: failed to launch sweep capture process at hackrf_sweep.exe: program not found
+[1778320654022] [INFO] Processing rates: sweeps 0.00/s, peaks 0.00/s, anomalies 0.00/s, alerts 0.00/s. Totals: sweeps 0, peaks 0, anomalies 0, alerts 0, reconnects 19.
+[1778320654025] [WARN] Unable to launch hackrf_sweep.exe: failed to launch sweep capture process at hackrf_sweep.exe: program not found
+[1778320658020] [WARN] Unable to launch hackrf_sweep.exe: failed to launch sweep capture process at hackrf_sweep.exe: program not found
+[1778320662015] [WARN] Unable to launch hackrf_sweep.exe: failed to launch sweep capture process at hackrf_sweep.exe: program not found
+[1778320664022] [INFO] Processing rates: sweeps 0.00/s, peaks 0.00/s, anomalies 0.00/s, alerts 0.00/s. Totals: sweeps 0, peaks 0, anomalies 0, alerts 0, reconnects 22.
+[1778320674019] [INFO] Processing rates: sweeps 0.00/s, peaks 0.00/s, anomalies 0.00/s, alerts 0.00/s. Totals: sweeps 0, peaks 0, anomalies 0, alerts 0, reconnects 22.
+[1778320680810] [WARN] Unable to launch hackrf_sweep.exe: failed to launch sweep capture process at hackrf_sweep.exe: program not found
+[1778320684023] [WARN] Unable to launch hackrf_sweep.exe: failed to launch sweep capture process at hackrf_sweep.exe: program not found
+[1778320684024] [INFO] Processing rates: sweeps 0.00/s, peaks 0.00/s, anomalies 0.00/s, alerts 0.00/s. Totals: sweeps 0, peaks 0, anomalies 0, alerts 0, reconnects 24.
+[1778320688018] [WARN] Unable to launch hackrf_sweep.exe: failed to launch sweep capture process at hackrf_sweep.exe: program not found
+[1778320692016] [WARN] Unable to launch hackrf_sweep.exe: failed to launch sweep capture process at hackrf_sweep.exe: program not found
+[1778320694021] [INFO] Processing rates: sweeps 0.00/s, peaks 0.00/s, anomalies 0.00/s, alerts 0.00/s. Totals: sweeps 0, peaks 0, anomalies 0, alerts 0, reconnects 26.
+[1778320696025] [WARN] Unable to launch hackrf_sweep.exe: failed to launch sweep capture process at hackrf_sweep.exe: program not found
