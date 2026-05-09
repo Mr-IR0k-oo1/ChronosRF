@@ -35,8 +35,8 @@ pub fn parse_sweep_line(line: &str, sequence: u64, captured_at_ms: u64) -> Resul
         bail!("start frequency must be lower than end frequency");
     }
 
-    if bin_width_hz <= 0.0 {
-        bail!("bin width must be positive");
+    if !bin_width_hz.is_finite() || bin_width_hz <= 0.0 {
+        bail!("bin width must be positive and finite");
     }
 
     let mut power_values = Vec::with_capacity(fields.len().saturating_sub(6));
@@ -106,6 +106,50 @@ mod tests {
         let error = parse_sweep_line(line, 1, 1).expect_err("row should be rejected");
 
         assert!(error.to_string().contains("invalid start frequency"));
+    }
+
+    #[test]
+    fn rejects_invalid_sample_count() {
+        let line = "2019-01-03, 11:57:34.967805, 2405000000, 2410000000, 1000000.00, bad, -61.19";
+        let error = parse_sweep_line(line, 1, 1).expect_err("row should be rejected");
+
+        assert!(error.to_string().contains("invalid sample count"));
+    }
+
+    #[test]
+    fn rejects_non_monotonic_frequency_ranges() {
+        let line = "2019-01-03, 11:57:34.967805, 2410000000, 2410000000, 1000000.00, 20, -61.19";
+        let error = parse_sweep_line(line, 1, 1).expect_err("row should be rejected");
+
+        assert!(error
+            .to_string()
+            .contains("start frequency must be lower than end frequency"));
+    }
+
+    #[test]
+    fn rejects_non_positive_or_non_finite_bin_width() {
+        let zero_width =
+            "2019-01-03, 11:57:34.967805, 2405000000, 2410000000, 0, 20, -61.19";
+        let nan_width =
+            "2019-01-03, 11:57:34.967805, 2405000000, 2410000000, NaN, 20, -61.19";
+
+        let zero_error = parse_sweep_line(zero_width, 1, 1).expect_err("row should be rejected");
+        let nan_error = parse_sweep_line(nan_width, 1, 1).expect_err("row should be rejected");
+
+        assert!(zero_error
+            .to_string()
+            .contains("bin width must be positive and finite"));
+        assert!(nan_error
+            .to_string()
+            .contains("bin width must be positive and finite"));
+    }
+
+    #[test]
+    fn rejects_invalid_power_values() {
+        let line = "2019-01-03, 11:57:34.967805, 2405000000, 2410000000, 1000000.00, 20, nope";
+        let error = parse_sweep_line(line, 1, 1).expect_err("row should be rejected");
+
+        assert!(error.to_string().contains("invalid power value"));
     }
 
     #[test]

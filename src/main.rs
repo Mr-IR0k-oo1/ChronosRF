@@ -153,6 +153,9 @@ async fn validate_sweep(
     let manager = DeviceManager::new(config, app_state.telemetry_hub(), control_rx, started_at_ms);
     let result = manager.validate_sweep(duration_seconds).await?;
 
-    println!("Captured {} sweep lines in {} seconds.", result.lines_captured, duration_seconds);
+    println!(
+        "Captured {} sweep lines in {} seconds ({} parsed, {} malformed).",
+        result.total_lines, duration_seconds, result.parsed_lines, result.malformed_lines
+    );
     Ok(())
 }

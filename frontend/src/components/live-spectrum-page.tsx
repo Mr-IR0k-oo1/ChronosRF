@@ -13,7 +13,6 @@ import {
 
 import { KpiCard } from "@/components/kpi-card";
 import { Panel } from "@/components/panel";
-import Radar from "@/components/Radar";
 import { WaterfallCanvas } from "@/components/waterfall-canvas";
 import { useTelemetry } from "@/hooks/use-telemetry";
 import { formatFrequency, formatPower, formatTimestamp } from "@/services/format";
@@ -114,50 +113,6 @@ export function LiveSpectrumPage() {
         </Panel>
 
         <div className="space-y-6">
-          <Panel title="Sweep Radar" eyebrow="React Bits">
-            <div className="relative h-64 overflow-hidden rounded-2xl border border-[var(--color-border-secondary)] bg-[radial-gradient(circle_at_center,rgba(59,130,246,0.08),transparent_65%),rgba(8,8,10,0.88)]">
-              <div className="absolute inset-0">
-                <Radar
-                  speed={0.75}
-                  scale={0.9}
-                  ringCount={7}
-                  spokeCount={12}
-                  ringThickness={0.045}
-                  spokeThickness={0.008}
-                  sweepSpeed={1.8}
-                  sweepWidth={2.8}
-                  sweepLobes={1}
-                  color="#60a5fa"
-                  backgroundColor="#030712"
-                  falloff={2.8}
-                  brightness={1.15}
-                  enableMouseInteraction={true}
-                  mouseInfluence={0.08}
-                />
-              </div>
-              <div className="pointer-events-none absolute inset-x-0 bottom-0 flex items-end justify-between bg-[linear-gradient(180deg,transparent,rgba(3,7,18,0.9))] px-4 py-3">
-                <div>
-                  <p className="text-[0.68rem] uppercase tracking-[0.24em] text-[var(--color-text-tertiary)]">
-                    Sweep lock
-                  </p>
-                  <p className="mt-1 font-mono text-sm text-[var(--color-text-primary)]">
-                    {latestPeak
-                      ? formatFrequency(latestPeak.frequency)
-                      : "Awaiting target"}
-                  </p>
-                </div>
-                <div className="text-right">
-                  <p className="text-[0.68rem] uppercase tracking-[0.24em] text-[var(--color-text-tertiary)]">
-                    Beam output
-                  </p>
-                  <p className="mt-1 font-mono text-sm text-[var(--color-accent)]">
-                    {latestPeak ? formatPower(latestPeak.max_power) : "N/A"}
-                  </p>
-                </div>
-              </div>
-            </div>
-          </Panel>
-
           <Panel title="Active Peak Bands" eyebrow="Clustered detections">
             <div className="space-y-3">
               {peaks.length > 0 ? (
@@ -176,7 +131,7 @@ export function LiveSpectrumPage() {
                             {formatFrequency(peak.frequency_end_hz)}
                           </p>
                           <p className="mt-1 text-sm text-[var(--color-text-secondary)]">
-                            Center {formatFrequency(peak.frequency)} • bandwidth{" "}
+                            Center {formatFrequency(peak.frequency)} / bandwidth{" "}
                             {(peak.bandwidth_hz / 1_000_000).toFixed(1)} MHz
                           </p>
                         </div>

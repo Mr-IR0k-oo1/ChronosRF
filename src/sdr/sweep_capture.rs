@@ -1,13 +1,16 @@
+use std::collections::VecDeque;
 use std::process::Stdio;
 use std::sync::Arc;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow};
 use tokio::io::{AsyncBufReadExt, BufReader, Lines};
-use tokio::process::{Child, ChildStdout, Command};
+use tokio::process::{Child, ChildStderr, ChildStdout, Command};
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 
 use crate::config::Config;
+
+const STDERR_LINE_LIMIT: usize = 128;
 
 #[derive(Debug)]
 pub struct CaptureExitStatus {
@@ -29,58 +32,30 @@ impl CaptureExitStatus {
 pub struct CaptureSession {
     child: Child,
     stdout_lines: Lines<BufReader<ChildStdout>>,
-    stderr_lines: Arc<Mutex<Vec<String>>>,
+    stderr_lines: Arc<Mutex<VecDeque<String>>>,
     stderr_task: JoinHandle<()>,
 }
 
 impl CaptureSession {
     pub fn spawn(config: &Config) -> Result<Self> {
-        let mut command = Command::new(&config.hackrf_sweep_path);
-        command
-            .arg("-f")
-            .arg(config.freq_range_mhz.to_string())
-            .arg("-w")
-            .arg(config.bin_width_hz.to_string())
-            .arg("-l")
-            .arg(config.lna_gain_db.to_string())
-            .arg("-g")
-            .arg(config.vga_gain_db.to_string())
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true);
-
-        if config.amp_enable {
-            command.arg("-a").arg("1");
-        }
-
-        if config.antenna_enable {
-            command.arg("-p").arg("1");
-        }
-
-        let mut child = command.spawn().with_context(|| {
-            format!(
-                "failed to launch sweep capture process at {}",
+        let child = build_capture_command(config).spawn().map_err(|error| {
+            anyhow!(
+                "failed to launch sweep capture process at {}: {error}",
                 config.hackrf_sweep_path
             )
         })?;
 
-        let stdout = child
-            .stdout
-            .take()
-            .context("sweep capture process did not expose stdout")?;
-        let stderr = child
-            .stderr
-            .take()
-            .context("sweep capture process did not expose stderr")?;
+        Self::from_child(child)
+    }
 
-        let stderr_lines = Arc::new(Mutex::new(Vec::new()));
+    fn from_child(mut child: Child) -> Result<Self> {
+        let stdout = take_stdout(&mut child)?;
+        let stderr = take_stderr(&mut child)?;
+
+        let stderr_lines = Arc::new(Mutex::new(VecDeque::with_capacity(STDERR_LINE_LIMIT)));
         let stderr_lines_reader = Arc::clone(&stderr_lines);
         let stderr_task = tokio::spawn(async move {
-            let mut lines = BufReader::new(stderr).lines();
-            while let Ok(Some(line)) = lines.next_line().await {
-                stderr_lines_reader.lock().await.push(line);
-            }
+            collect_stderr_lines(stderr, stderr_lines_reader).await;
         });
 
         Ok(Self {
@@ -103,12 +78,218 @@ impl CaptureSession {
     pub async fn finish(mut self) -> Result<CaptureExitStatus> {
         let status = self.child.wait().await?;
         let _ = self.stderr_task.await;
-        let stderr_lines = self.stderr_lines.lock().await.clone();
+        let stderr_lines = self.stderr_lines.lock().await.iter().cloned().collect();
 
         Ok(CaptureExitStatus {
             success: status.success(),
             exit_code: status.code(),
             stderr_lines,
         })
+    }
+}
+
+fn build_capture_command(config: &Config) -> Command {
+    let mut command = Command::new(&config.hackrf_sweep_path);
+    command
+        .arg("-f")
+        .arg(config.freq_range_mhz.to_string())
+        .arg("-w")
+        .arg(config.bin_width_hz.to_string())
+        .arg("-l")
+        .arg(config.lna_gain_db.to_string())
+        .arg("-g")
+        .arg(config.vga_gain_db.to_string())
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+
+    if config.amp_enable {
+        command.arg("-a").arg("1");
+    }
+
+    if config.antenna_enable {
+        command.arg("-p").arg("1");
+    }
+
+    command
+}
+
+fn take_stdout(child: &mut Child) -> Result<ChildStdout> {
+    child
+        .stdout
+        .take()
+        .context("sweep capture process did not expose stdout")
+}
+
+fn take_stderr(child: &mut Child) -> Result<ChildStderr> {
+    child
+        .stderr
+        .take()
+        .context("sweep capture process did not expose stderr")
+}
+
+async fn collect_stderr_lines(stderr: ChildStderr, lines: Arc<Mutex<VecDeque<String>>>) {
+    let mut stderr_lines = BufReader::new(stderr).lines();
+    while let Ok(Some(line)) = stderr_lines.next_line().await {
+        let mut sink = lines.lock().await;
+        push_stderr_line(&mut sink, line);
+    }
+}
+
+fn push_stderr_line(lines: &mut VecDeque<String>, line: String) {
+    if lines.len() == STDERR_LINE_LIMIT {
+        lines.pop_front();
+    }
+
+    lines.push_back(line);
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::VecDeque;
+    use std::ffi::OsStr;
+    use std::net::{Ipv4Addr, SocketAddr};
+    use std::path::PathBuf;
+    use std::process::Stdio;
+    use std::time::Duration;
+
+    use tokio::process::Command;
+
+    use super::{
+        CaptureSession, STDERR_LINE_LIMIT, build_capture_command, push_stderr_line, take_stdout,
+    };
+    use crate::config::{Config, FrequencyRange};
+
+    fn test_config() -> Config {
+        Config {
+            bind_addr: SocketAddr::from((Ipv4Addr::LOCALHOST, 9001)),
+            hackrf_info_path: "hackrf_info.exe".to_string(),
+            hackrf_sweep_path: "hackrf_sweep.exe".to_string(),
+            freq_range_mhz: FrequencyRange {
+                start_mhz: 2400,
+                end_mhz: 2500,
+            },
+            bin_width_hz: 1_000_000,
+            lna_gain_db: 16,
+            vga_gain_db: 20,
+            amp_enable: false,
+            antenna_enable: false,
+            restart_backoff: Duration::from_secs(3),
+            peak_threshold_db: -35.0,
+            occupancy_window_seconds: 300,
+            occupancy_recent_window_seconds: 60,
+            occupancy_snapshot_interval: Duration::from_secs(1),
+            alert_buffer_size: 256,
+            power_spike_threshold_db: 12.0,
+            burst_quiet_period: Duration::from_secs(10),
+            burst_max_duration: Duration::from_secs(3),
+            repeated_pulse_window: Duration::from_secs(10),
+            repeated_pulse_min_count: 3,
+            sustained_critical_period: Duration::from_secs(30),
+            recordings_dir: PathBuf::from("recordings"),
+            datasets_dir: PathBuf::from("datasets"),
+            default_playback_speed: 1.0,
+            allowed_frontend_origin: "http://127.0.0.1:3000".to_string(),
+            status_log_interval: Duration::from_secs(10),
+        }
+    }
+
+    #[test]
+    fn command_builder_includes_required_args() {
+        let command = build_capture_command(&test_config());
+        let args = command
+            .as_std()
+            .get_args()
+            .map(|arg| arg.to_string_lossy().to_string())
+            .collect::<Vec<_>>();
+
+        assert_eq!(command.as_std().get_program(), OsStr::new("hackrf_sweep.exe"));
+        assert_eq!(
+            args,
+            vec![
+                "-f".to_string(),
+                "2400:2500".to_string(),
+                "-w".to_string(),
+                "1000000".to_string(),
+                "-l".to_string(),
+                "16".to_string(),
+                "-g".to_string(),
+                "20".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn command_builder_appends_optional_flags() {
+        let mut config = test_config();
+        config.amp_enable = true;
+        config.antenna_enable = true;
+
+        let command = build_capture_command(&config);
+        let args = command
+            .as_std()
+            .get_args()
+            .map(|arg| arg.to_string_lossy().to_string())
+            .collect::<Vec<_>>();
+
+        assert!(args.windows(2).any(|pair| pair == ["-a", "1"]));
+        assert!(args.windows(2).any(|pair| pair == ["-p", "1"]));
+    }
+
+    #[tokio::test]
+    async fn reports_missing_stdout_pipe() {
+        let mut command = quick_exit_command();
+        command.stdout(Stdio::null()).stderr(Stdio::piped());
+
+        let mut child = command.spawn().expect("test child should start");
+        let error = take_stdout(&mut child)
+            .err()
+            .expect("stdout should be missing");
+
+        assert!(error.to_string().contains("did not expose stdout"));
+        let _ = child.wait().await;
+    }
+
+    #[tokio::test]
+    async fn reports_missing_stderr_pipe() {
+        let mut command = quick_exit_command();
+        command.stdout(Stdio::piped()).stderr(Stdio::null());
+
+        let child = command.spawn().expect("test child should start");
+        let error = CaptureSession::from_child(child)
+            .err()
+            .expect("stderr should be missing");
+
+        assert!(error.to_string().contains("did not expose stderr"));
+    }
+
+    #[test]
+    fn stderr_retention_is_capped() {
+        let mut lines = VecDeque::with_capacity(STDERR_LINE_LIMIT);
+        for index in 0..(STDERR_LINE_LIMIT + 5) {
+            push_stderr_line(&mut lines, format!("line-{index}"));
+        }
+
+        assert_eq!(lines.len(), STDERR_LINE_LIMIT);
+        assert_eq!(lines.front().map(String::as_str), Some("line-5"));
+        assert_eq!(
+            lines.back().map(String::as_str),
+            Some(format!("line-{}", STDERR_LINE_LIMIT + 4).as_str())
+        );
+    }
+
+    #[cfg(windows)]
+    fn quick_exit_command() -> Command {
+        let mut command = Command::new("cmd");
+        command.arg("/C").arg("exit 0");
+        command
+    }
+
+    #[cfg(not(windows))]
+    fn quick_exit_command() -> Command {
+        let mut command = Command::new("sh");
+        command.arg("-c").arg("exit 0");
+        command
     }
 }

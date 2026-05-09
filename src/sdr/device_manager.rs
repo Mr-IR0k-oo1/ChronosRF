@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result, anyhow, bail};
 use tokio::process::Command;
 use tokio::sync::mpsc;
 use tokio::time::{Instant, interval};
@@ -35,7 +35,9 @@ pub struct HardwareValidationResult {
 }
 
 pub struct SweepValidationResult {
-    pub lines_captured: u64,
+    pub total_lines: u64,
+    pub parsed_lines: u64,
+    pub malformed_lines: u64,
 }
 
 impl DeviceManager {
@@ -370,12 +372,29 @@ impl DeviceManager {
     pub async fn validate_sweep(&self, duration_seconds: u64) -> Result<SweepValidationResult> {
         let mut session = CaptureSession::spawn(&self.config)?;
         let deadline = Instant::now() + Duration::from_secs(duration_seconds.max(1));
-        let mut lines_captured = 0u64;
+        let mut total_lines = 0u64;
+        let mut parsed_lines = 0u64;
+        let mut malformed_lines = 0u64;
+        let mut sequence = 0u64;
 
         while Instant::now() < deadline {
-            match tokio::time::timeout(Duration::from_millis(500), session.next_stdout_line()).await {
+            match tokio::time::timeout(Duration::from_millis(500), session.next_stdout_line()).await
+            {
                 Ok(Ok(Some(_line))) => {
-                    lines_captured += 1;
+                    total_lines += 1;
+                    sequence += 1;
+                    let line = _line;
+                    match parse_sweep_line(&line, sequence, logger::now_ms()) {
+                        Ok(_) => {
+                            parsed_lines += 1;
+                        }
+                        Err(error) => {
+                            malformed_lines += 1;
+                            logger::warn(&format!(
+                                "Validation skipped malformed sweep row: {error:#}. Raw line: {line}"
+                            ));
+                        }
+                    }
                 }
                 Ok(Ok(None)) => break,
                 Ok(Err(error)) => return Err(error),
@@ -383,8 +402,36 @@ impl DeviceManager {
             }
         }
 
-        let _ = session.stop().await;
-        Ok(SweepValidationResult { lines_captured })
+        let exit_status = session.stop().await?;
+        if parsed_lines == 0 {
+            let mut message = if total_lines == 0 {
+                "Sweep capture produced no telemetry lines during validation.".to_string()
+            } else {
+                format!(
+                    "Sweep capture produced {total_lines} telemetry lines but none parsed successfully ({malformed_lines} malformed)."
+                )
+            };
+
+            if !exit_status.success {
+                message.push_str(&format!(
+                    " Exit code: {:?}.",
+                    exit_status.exit_code
+                ));
+            }
+
+            if let Some(stderr_summary) = exit_status.stderr_summary() {
+                message.push_str(" stderr: ");
+                message.push_str(&stderr_summary);
+            }
+
+            bail!(message);
+        }
+
+        Ok(SweepValidationResult {
+            total_lines,
+            parsed_lines,
+            malformed_lines,
+        })
     }
 
     async fn publish_detection_output(
@@ -603,5 +650,182 @@ impl DeviceManager {
         .await;
 
         Ok(playback_status.clone())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+    use std::net::{Ipv4Addr, SocketAddr};
+    use std::path::{Path, PathBuf};
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use tempfile::TempDir;
+    use tokio::sync::{broadcast, mpsc};
+
+    use super::DeviceManager;
+    use crate::config::{Config, FrequencyRange};
+    use crate::models::{HealthState, StatusMetrics};
+    use crate::sdr::sweep_capture::CaptureSession;
+    use crate::state::ServiceState;
+
+    fn test_config(hackrf_sweep_path: PathBuf) -> Arc<Config> {
+        Arc::new(Config {
+            bind_addr: SocketAddr::from((Ipv4Addr::LOCALHOST, 9001)),
+            hackrf_info_path: "hackrf_info.exe".to_string(),
+            hackrf_sweep_path: hackrf_sweep_path.display().to_string(),
+            freq_range_mhz: FrequencyRange {
+                start_mhz: 2400,
+                end_mhz: 2500,
+            },
+            bin_width_hz: 1_000_000,
+            lna_gain_db: 16,
+            vga_gain_db: 20,
+            amp_enable: false,
+            antenna_enable: false,
+            restart_backoff: Duration::from_secs(1),
+            peak_threshold_db: -35.0,
+            occupancy_window_seconds: 300,
+            occupancy_recent_window_seconds: 60,
+            occupancy_snapshot_interval: Duration::from_secs(1),
+            alert_buffer_size: 64,
+            power_spike_threshold_db: 12.0,
+            burst_quiet_period: Duration::from_secs(10),
+            burst_max_duration: Duration::from_secs(3),
+            repeated_pulse_window: Duration::from_secs(10),
+            repeated_pulse_min_count: 3,
+            sustained_critical_period: Duration::from_secs(30),
+            recordings_dir: PathBuf::from("recordings"),
+            datasets_dir: PathBuf::from("datasets"),
+            default_playback_speed: 1.0,
+            allowed_frontend_origin: "http://127.0.0.1:3000".to_string(),
+            status_log_interval: Duration::from_secs(10),
+        })
+    }
+
+    fn build_manager(config: Arc<Config>) -> (DeviceManager, Arc<ServiceState>) {
+        let (telemetry_tx, _) = broadcast::channel(32);
+        let (control_tx, control_rx) = mpsc::channel(4);
+        let state = ServiceState::new(config.clone(), telemetry_tx, control_tx, 1);
+        let manager = DeviceManager::new(config, state.telemetry_hub(), control_rx, 1);
+        (manager, state)
+    }
+
+    #[tokio::test]
+    async fn validate_sweep_reports_spawn_failures_with_path() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let missing_path = temp_dir.path().join("missing-capture-script.exe");
+        let config = test_config(missing_path.clone());
+        let (manager, _state) = build_manager(config);
+
+        let error = manager
+            .validate_sweep(1)
+            .await
+            .err()
+            .expect("missing capture path should fail");
+        let error_chain = format!("{error:#}");
+
+        assert!(error_chain.contains("failed to launch sweep capture process"));
+        assert!(error_chain.contains(&missing_path.display().to_string()));
+    }
+
+    #[tokio::test]
+    async fn validate_sweep_counts_parsed_rows() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let script_path = write_capture_script(
+            temp_dir.path(),
+            "valid-capture",
+            &[VALID_SWEEP_LINE, VALID_SWEEP_LINE],
+        );
+        let config = test_config(script_path);
+        let (manager, _state) = build_manager(config);
+
+        let result = manager
+            .validate_sweep(1)
+            .await
+            .expect("valid rows should pass validation");
+
+        assert_eq!(result.total_lines, 2);
+        assert_eq!(result.parsed_lines, 2);
+        assert_eq!(result.malformed_lines, 0);
+    }
+
+    #[tokio::test]
+    async fn validate_sweep_counts_malformed_rows_without_failing_when_valid_rows_exist() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let script_path = write_capture_script(
+            temp_dir.path(),
+            "mixed-capture",
+            &[VALID_SWEEP_LINE, "malformed-row"],
+        );
+        let config = test_config(script_path);
+        let (manager, _state) = build_manager(config);
+
+        let result = manager
+            .validate_sweep(1)
+            .await
+            .expect("mixed rows should still pass with at least one valid row");
+
+        assert_eq!(result.total_lines, 2);
+        assert_eq!(result.parsed_lines, 1);
+        assert_eq!(result.malformed_lines, 1);
+    }
+
+    #[tokio::test]
+    async fn handle_live_shutdown_publishes_restartable_degraded_state() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let script_path = write_capture_script(temp_dir.path(), "empty-capture", &[]);
+        let config = test_config(script_path);
+        let (manager, state) = build_manager(config.clone());
+        let session = CaptureSession::spawn(&config).expect("capture session should start");
+        let mut metrics = StatusMetrics::default();
+
+        manager
+            .handle_live_shutdown(session, None, &mut metrics)
+            .await
+            .expect("shutdown handling should succeed");
+
+        let snapshots = state.snapshots().await;
+        assert_eq!(metrics.reconnect_attempts, 1);
+        assert_eq!(snapshots.health.state, HealthState::Degraded);
+        assert!(snapshots.health.message.contains("restarting"));
+    }
+
+    const VALID_SWEEP_LINE: &str =
+        "2019-01-03, 11:57:34.967805, 2400000000, 2405000000, 1000000.00, 20, -64.72, -63.36, -60.91";
+
+    #[cfg(windows)]
+    fn write_capture_script(directory: &Path, name: &str, lines: &[&str]) -> PathBuf {
+        let path = directory.join(format!("{name}.cmd"));
+        let mut script = String::from("@echo off\r\n");
+        for line in lines {
+            script.push_str("echo ");
+            script.push_str(line);
+            script.push_str("\r\n");
+        }
+        script.push_str("exit /b 0\r\n");
+        fs::write(&path, script).expect("capture script should be written");
+        path
+    }
+
+    #[cfg(not(windows))]
+    fn write_capture_script(directory: &Path, name: &str, lines: &[&str]) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+
+        let path = directory.join(name);
+        let mut script = String::from("#!/bin/sh\n");
+        for line in lines {
+            script.push_str("printf '%s\\n' '");
+            script.push_str(line);
+            script.push_str("'\n");
+        }
+        fs::write(&path, script).expect("capture script should be written");
+        let mut permissions = fs::metadata(&path)
+            .expect("metadata should exist")
+            .permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&path, permissions).expect("permissions should be updated");
+        path
     }
 }

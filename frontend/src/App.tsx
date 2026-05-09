@@ -1,12 +1,14 @@
 import React, { useEffect, useState } from "react";
 
-import { TelemetryProvider } from "@/components/telemetry-provider";
 import { AppShell } from "@/components/app-shell";
 import { LiveSpectrumPage } from "@/components/live-spectrum-page";
+import { TelemetryProvider } from "@/components/telemetry-provider";
 import { fetchInitialTelemetrySnapshot } from "@/services/api";
+import { type InitialTelemetrySnapshot } from "@/services/types";
 
 export default function App() {
-  const [initialSnapshot, setInitialSnapshot] = useState<any | null>(null);
+  const [initialSnapshot, setInitialSnapshot] =
+    useState<InitialTelemetrySnapshot | null>(null);
 
   useEffect(() => {
     void (async () => {
@@ -20,10 +22,11 @@ export default function App() {
   }, []);
 
   if (initialSnapshot === null) {
-    // Still loading or failed; show a minimal loader
     return (
       <div className="min-h-screen flex items-center justify-center bg-surface">
-        <div className="text-center text-sm text-gray-300">Loading dashboard…</div>
+        <div className="text-center text-sm text-gray-300">
+          Loading dashboard...
+        </div>
       </div>
     );
   }
