@@ -2,6 +2,7 @@ import {
   type AlertEvent,
   type AnomalyEvent,
   type HealthStatus,
+  type IgorAssessment,
   type InitialTelemetrySnapshot,
   type OccupancySnapshot,
   type PlaybackStatus,
@@ -12,7 +13,7 @@ import {
   type TelemetryEvent,
 } from "@/services/types";
 
-type ConnectionState = "idle" | "connecting" | "open" | "closed" | "error";
+export type ConnectionState = "idle" | "connecting" | "open" | "closed" | "error";
 
 export interface TelemetryState {
   connectionState: ConnectionState;
@@ -26,12 +27,14 @@ export interface TelemetryState {
   peaks: SignalPeak[];
   anomalies: AnomalyEvent[];
   alerts: AlertEvent[];
+  igorAssessments: IgorAssessment[];
 }
 
 const MAX_SWEEPS = 96;
 const MAX_PEAKS = 240;
 const MAX_ANOMALIES = 160;
 const MAX_ALERTS = 200;
+const MAX_IGOR_ASSESSMENTS = 120;
 
 const initialState: TelemetryState = {
   connectionState: "idle",
@@ -45,6 +48,7 @@ const initialState: TelemetryState = {
   peaks: [],
   anomalies: [],
   alerts: [],
+  igorAssessments: [],
 };
 
 export class TelemetryStore {
@@ -72,7 +76,12 @@ export class TelemetryStore {
       playbackStatus:
         snapshot.status?.current_playback ?? this.state.playbackStatus,
       occupancy: snapshot.occupancy ?? this.state.occupancy,
-      alerts: mergeUniqueAlerts(this.state.alerts, snapshot.alerts),
+      alerts: mergeUniqueById(this.state.alerts, snapshot.alerts, MAX_ALERTS),
+      igorAssessments: mergeUniqueById(
+        this.state.igorAssessments,
+        snapshot.igorAssessments,
+        MAX_IGOR_ASSESSMENTS,
+      ),
     };
     this.emit();
   }
@@ -179,6 +188,13 @@ export class TelemetryStore {
       case "alert":
         nextState.alerts = pushBounded(nextState.alerts, event.data, MAX_ALERTS);
         break;
+      case "igor_assessment":
+        nextState.igorAssessments = pushBounded(
+          nextState.igorAssessments,
+          event.data,
+          MAX_IGOR_ASSESSMENTS,
+        );
+        break;
     }
 
     this.state = nextState;
@@ -230,20 +246,24 @@ function pushBounded<T>(items: T[], item: T, max: number) {
   return next;
 }
 
-function mergeUniqueAlerts(current: AlertEvent[], incoming: AlertEvent[]) {
+function mergeUniqueById<T extends { id: string }>(
+  current: T[],
+  incoming: T[],
+  max: number,
+) {
   const merged = [...current];
   const seen = new Set(current.map((alert) => alert.id));
 
-  for (const alert of incoming) {
-    if (seen.has(alert.id)) {
+  for (const item of incoming) {
+    if (seen.has(item.id)) {
       continue;
     }
-    merged.push(alert);
-    seen.add(alert.id);
+    merged.push(item);
+    seen.add(item.id);
   }
 
-  if (merged.length > MAX_ALERTS) {
-    return merged.slice(merged.length - MAX_ALERTS);
+  if (merged.length > max) {
+    return merged.slice(merged.length - max);
   }
 
   return merged;

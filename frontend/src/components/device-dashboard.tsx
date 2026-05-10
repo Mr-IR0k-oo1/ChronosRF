@@ -1,9 +1,12 @@
 "use client";
 
-import { useEffect, useState, useTransition } from "react";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { useEffect, useMemo, useState, useTransition } from "react";
 
+import { EmptyState } from "@/components/empty-state";
 import { KpiCard } from "@/components/kpi-card";
 import { Panel } from "@/components/panel";
+import { StateBanner } from "@/components/state-banner";
 import { useTelemetry } from "@/hooks/use-telemetry";
 import {
   listRecordings,
@@ -13,46 +16,57 @@ import {
   stopRecording,
 } from "@/services/api";
 import {
+  createInvestigationSearchParams,
+  parseInvestigationSearchState,
+} from "@/services/query-state";
+import {
   formatBytes,
   formatDuration,
   formatTimestamp,
 } from "@/services/format";
+import { getOperationalState } from "@/services/telemetry-view";
 import { type RecordingFileSummary } from "@/services/types";
 
 export function DeviceDashboard() {
   const telemetry = useTelemetry();
+  const pathname = usePathname();
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const filters = useMemo(
+    () => parseInvestigationSearchState(searchParams),
+    [searchParams],
+  );
+  const operational = useMemo(() => getOperationalState(telemetry), [telemetry]);
   const [recordings, setRecordings] = useState<RecordingFileSummary[]>([]);
-  const [selectedRecording, setSelectedRecording] = useState<string>("");
   const [error, setError] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
 
   useEffect(() => {
-    void (async () => {
-      try {
-        const nextRecordings = await listRecordings();
-        setRecordings(nextRecordings);
-        if (nextRecordings.length > 0) {
-          setSelectedRecording((current) => current || nextRecordings[0].file_path);
-        }
-      } catch (nextError) {
-        setError(
-          nextError instanceof Error
-            ? nextError.message
-            : "Failed to load recordings.",
-        );
-      }
-    })();
+    void refreshRecordings();
   }, []);
+
+  const selectedRecordingSessionId = filters.recording ?? recordings[0]?.session_id ?? "";
+  const selectedRecording =
+    recordings.find((recording) => recording.session_id === selectedRecordingSessionId) ??
+    null;
+
+  function replaceSearch(recording: string | null) {
+    const next = createInvestigationSearchParams(
+      new URLSearchParams(searchParams.toString()),
+      { recording },
+    );
+    const query = next.toString();
+    router.replace(query ? `${pathname}?${query}` : pathname, { scroll: false });
+  }
 
   async function refreshRecordings() {
     try {
       const nextRecordings = await listRecordings();
       setRecordings(nextRecordings);
-      if (!selectedRecording && nextRecordings.length > 0) {
-        setSelectedRecording(nextRecordings[0].file_path);
-      }
     } catch (nextError) {
-      setError(nextError instanceof Error ? nextError.message : "Failed to load recordings.");
+      setError(
+        nextError instanceof Error ? nextError.message : "Failed to load recordings.",
+      );
     }
   }
 
@@ -63,7 +77,24 @@ export function DeviceDashboard() {
   }
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-5">
+      {telemetry.recordingStatus?.active ? (
+        <StateBanner
+          tone="success"
+          title="Recording session active"
+          message={`Session ${telemetry.recordingStatus.session_id ?? "unknown"} is writing telemetry events to disk.`}
+          action={{ href: "/threats", label: "Open investigations" }}
+        />
+      ) : null}
+      {operational.isPlaybackActive ? (
+        <StateBanner
+          tone="info"
+          title="Playback mode active"
+          message={telemetry.playbackStatus?.file_path ?? "Recorded telemetry is currently replaying."}
+          action={{ href: "/threats?source=recorded", label: "Review playback" }}
+        />
+      ) : null}
+
       <section className="grid gap-4 lg:grid-cols-4">
         <KpiCard
           label="Capture state"
@@ -80,8 +111,8 @@ export function DeviceDashboard() {
           value={telemetry.recordingStatus?.active ? "active" : "idle"}
           detail={
             telemetry.recordingStatus?.active
-              ? `${telemetry.recordingStatus.event_count} events`
-              : "Start a JSONL capture session"
+              ? `${telemetry.recordingStatus.event_count} events captured`
+              : "Ready for a new capture session"
           }
         />
         <KpiCard
@@ -89,20 +120,17 @@ export function DeviceDashboard() {
           value={telemetry.playbackStatus?.active ? "active" : "idle"}
           detail={
             telemetry.playbackStatus?.active
-              ? `${telemetry.playbackStatus.emitted_events} events emitted`
-              : "Replay a prior capture session"
+              ? `${telemetry.playbackStatus.emitted_events} events replayed`
+              : "Select a recording to replay"
           }
         />
       </section>
 
-      <div className="grid gap-6 xl:grid-cols-[1.05fr_1.2fr]">
+      <div className="grid gap-5 xl:grid-cols-[minmax(0,1.1fr)_minmax(320px,0.95fr)]">
         <Panel title="Device State" eyebrow="Backend telemetry">
-          <dl className="grid gap-4 sm:grid-cols-2">
+          <dl className="grid gap-3 sm:grid-cols-2">
             <Fact label="Sweep path" value={telemetry.health?.sweep_path ?? "N/A"} mono />
-            <Fact
-              label="Last error"
-              value={telemetry.health?.last_error ?? "None"}
-            />
+            <Fact label="Last error" value={telemetry.health?.last_error ?? "None"} />
             <Fact
               label="Last sweep"
               value={formatTimestamp(telemetry.status?.last_sweep_at_ms ?? null)}
@@ -128,137 +156,174 @@ export function DeviceDashboard() {
           </dl>
         </Panel>
 
-        <Panel title="Recording & Playback Controls" eyebrow="HTTP control surface">
-          <div className="grid gap-6 lg:grid-cols-[0.9fr_1.1fr]">
-            <div className="space-y-4">
-              <button
-                type="button"
-                disabled={isPending || Boolean(telemetry.playbackStatus?.active)}
-                onClick={() =>
-                  runAction(async () => {
-                    setError(null);
-                    await startRecording();
-                  })
-                }
-                className="w-full rounded-2xl bg-[var(--color-accent)] px-4 py-3 font-semibold text-[var(--color-background)] transition hover:brightness-110 disabled:cursor-not-allowed disabled:bg-[var(--color-surface-strong)] disabled:text-[var(--color-text-tertiary)]"
-              >
-                Start Recording
-              </button>
-              <button
-                type="button"
-                disabled={isPending || !telemetry.recordingStatus?.active}
-                onClick={() =>
-                  runAction(async () => {
-                    setError(null);
-                    await stopRecording();
-                    await refreshRecordings();
-                  })
-                }
-                className="w-full rounded-2xl border border-[var(--color-border-secondary)] bg-[var(--color-surface)] px-4 py-3 font-semibold text-[var(--color-text-primary)] transition hover:bg-[var(--color-surface-hover)] disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                Stop Recording
-              </button>
-              <button
-                type="button"
-                disabled={isPending || !telemetry.playbackStatus?.active}
-                onClick={() =>
-                  runAction(async () => {
-                    setError(null);
-                    await stopPlayback();
-                  })
-                }
-                className="w-full rounded-2xl border border-[var(--color-border-secondary)] bg-[var(--color-surface)] px-4 py-3 font-semibold text-[var(--color-text-primary)] transition hover:bg-[var(--color-surface-hover)] disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                Stop Playback
-              </button>
-              {error ? (
-                <p className="rounded-2xl border border-[var(--color-error)]/25 bg-[var(--color-error)]/10 px-4 py-3 text-sm text-[var(--color-error)]">
-                  {error}
-                </p>
-              ) : null}
-            </div>
+        <Panel title="Action Center" eyebrow="Recording and replay control">
+          <div className="space-y-4">
+            <button
+              type="button"
+              disabled={isPending || Boolean(telemetry.playbackStatus?.active)}
+              onClick={() =>
+                runAction(async () => {
+                  setError(null);
+                  await startRecording();
+                })
+              }
+              className="w-full rounded-2xl bg-[var(--color-text-primary)] px-4 py-3 text-sm font-semibold text-[var(--color-background)] transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              Start Recording
+            </button>
+            <button
+              type="button"
+              disabled={isPending || !telemetry.recordingStatus?.active}
+              onClick={() =>
+                runAction(async () => {
+                  setError(null);
+                  await stopRecording();
+                  await refreshRecordings();
+                })
+              }
+              className="w-full rounded-2xl border border-[var(--color-border-secondary)] bg-[var(--color-surface-subtle)] px-4 py-3 text-sm font-semibold text-[var(--color-text-primary)] transition hover:bg-[var(--color-surface-hover)] disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              Stop Recording
+            </button>
+            <button
+              type="button"
+              disabled={isPending || !selectedRecording || Boolean(telemetry.recordingStatus?.active)}
+              onClick={() =>
+                selectedRecording
+                  ? runAction(async () => {
+                      setError(null);
+                      await startPlayback(selectedRecording.file_path);
+                    })
+                  : undefined
+              }
+              className="w-full rounded-2xl border border-[var(--color-info)]/30 bg-[var(--color-info)]/10 px-4 py-3 text-sm font-semibold text-[var(--color-info)] transition hover:bg-[var(--color-info)]/15 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              Start Playback
+            </button>
+            <button
+              type="button"
+              disabled={isPending || !telemetry.playbackStatus?.active}
+              onClick={() =>
+                runAction(async () => {
+                  setError(null);
+                  await stopPlayback();
+                })
+              }
+              className="w-full rounded-2xl border border-[var(--color-border-secondary)] bg-[var(--color-surface-subtle)] px-4 py-3 text-sm font-semibold text-[var(--color-text-primary)] transition hover:bg-[var(--color-surface-hover)] disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              Stop Playback
+            </button>
+            <button
+              type="button"
+              disabled={isPending}
+              onClick={() =>
+                runAction(async () => {
+                  setError(null);
+                  await refreshRecordings();
+                })
+              }
+              className="w-full rounded-2xl border border-[var(--color-border-secondary)] bg-[var(--color-surface-subtle)] px-4 py-3 text-sm font-semibold text-[var(--color-text-primary)] transition hover:bg-[var(--color-surface-hover)] disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              Refresh Session Inventory
+            </button>
 
-            <div className="space-y-4">
-              <label className="block text-sm uppercase tracking-[0.18em] text-[var(--color-text-secondary)]">
-                Recording file
-              </label>
-              <select
-                value={selectedRecording}
-                onChange={(event) => setSelectedRecording(event.target.value)}
-                className="w-full rounded-2xl border border-[var(--color-border-secondary)] bg-[var(--color-surface-strong)]/80 px-4 py-3 text-sm text-[var(--color-text-primary)] outline-none ring-0"
-              >
-                {recordings.length > 0 ? (
-                  recordings.map((recording) => (
-                    <option key={recording.session_id} value={recording.file_path}>
-                      {recording.session_id}
-                    </option>
-                  ))
-                ) : (
-                  <option value="">No recordings available</option>
-                )}
-              </select>
-              <button
-                type="button"
-                disabled={isPending || !selectedRecording || Boolean(telemetry.recordingStatus?.active)}
-                onClick={() =>
-                  runAction(async () => {
-                    setError(null);
-                    await startPlayback(selectedRecording);
-                  })
-                }
-                className="w-full rounded-2xl border border-[var(--color-success)]/30 bg-[var(--color-success)]/15 px-4 py-3 font-semibold text-[var(--color-success)] transition hover:bg-[var(--color-success)]/20 disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                Start Playback
-              </button>
-              <button
-                type="button"
-                disabled={isPending}
-                onClick={() =>
-                  runAction(async () => {
-                    setError(null);
-                    await refreshRecordings();
-                  })
-                }
-                className="w-full rounded-2xl border border-[var(--color-border-secondary)] bg-[var(--color-surface)] px-4 py-3 font-semibold text-[var(--color-text-primary)] transition hover:bg-[var(--color-surface-hover)] disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                Refresh Recording List
-              </button>
-            </div>
+            {error ? (
+              <p className="rounded-2xl border border-[var(--color-error)]/25 bg-[var(--color-error)]/10 px-4 py-3 text-sm text-[var(--color-error)]">
+                {error}
+              </p>
+            ) : null}
           </div>
         </Panel>
       </div>
 
-      <Panel title="Available Recordings" eyebrow="JSONL sessions">
-        <div className="space-y-3">
+      <div className="grid gap-5 xl:grid-cols-[minmax(0,1.2fr)_minmax(320px,0.8fr)]">
+        <Panel title="Session Inventory" eyebrow="Local recordings">
           {recordings.length > 0 ? (
-            recordings.map((recording) => (
-              <article
-                key={recording.session_id}
-                className="orbit-card p-4"
-              >
-                <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
-                  <div>
-                    <p className="font-mono text-sm text-[var(--color-text-primary)]">
-                      {recording.session_id}
-                    </p>
-                    <p className="mt-1 text-sm text-[var(--color-text-secondary)]">
-                      {recording.file_path}
-                    </p>
-                  </div>
-                  <div className="text-sm text-[var(--color-text-secondary)]">
-                    <p>{formatBytes(recording.size_bytes)}</p>
-                    <p>{formatTimestamp(recording.modified_at_ms)}</p>
-                  </div>
-                </div>
-              </article>
-            ))
-          ) : (
-            <div className="rounded-2xl border border-dashed border-[var(--color-border-secondary)] bg-[var(--color-surface)] p-8 text-sm text-[var(--color-text-secondary)]">
-              No recording sessions found yet.
+            <div className="space-y-2">
+              {recordings.map((recording) => {
+                const selected = recording.session_id === selectedRecordingSessionId;
+                return (
+                  <button
+                    key={recording.session_id}
+                    type="button"
+                    onClick={() => replaceSearch(recording.session_id)}
+                    className={[
+                      "w-full rounded-2xl border px-4 py-3 text-left transition",
+                      selected
+                        ? "border-[var(--color-accent)] bg-[var(--color-accent-soft)]"
+                        : "border-[var(--color-border-secondary)] bg-[var(--color-surface-subtle)] hover:border-[var(--color-border-strong)] hover:bg-[var(--color-surface-hover)]",
+                    ].join(" ")}
+                  >
+                    <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+                      <div>
+                        <p className="font-mono text-sm text-[var(--color-text-primary)]">
+                          {recording.session_id}
+                        </p>
+                        <p className="mt-1 text-sm leading-6 text-[var(--color-text-secondary)]">
+                          {recording.file_path}
+                        </p>
+                      </div>
+                      <div className="text-sm text-[var(--color-text-secondary)] md:text-right">
+                        <p>{formatBytes(recording.size_bytes)}</p>
+                        <p>{formatTimestamp(recording.modified_at_ms)}</p>
+                      </div>
+                    </div>
+                  </button>
+                );
+              })}
             </div>
+          ) : (
+            <EmptyState
+              title="No recording sessions found"
+              message="Start a capture session to create the first replayable JSONL recording."
+            />
           )}
-        </div>
-      </Panel>
+        </Panel>
+
+        <Panel title="Selected Session" eyebrow="Replay context">
+          {selectedRecording ? (
+            <div className="space-y-4">
+              <div>
+                <p className="font-mono text-sm text-[var(--color-text-primary)]">
+                  {selectedRecording.session_id}
+                </p>
+                <p className="mt-2 text-sm leading-6 text-[var(--color-text-secondary)]">
+                  {selectedRecording.file_path}
+                </p>
+              </div>
+              <dl className="grid gap-3">
+                <Fact label="Modified" value={formatTimestamp(selectedRecording.modified_at_ms)} />
+                <Fact label="Size" value={formatBytes(selectedRecording.size_bytes)} />
+                <Fact
+                  label="Event count"
+                  value={formatNullableMetric(selectedRecording.event_count)}
+                />
+                <Fact
+                  label="Alert count"
+                  value={formatNullableMetric(selectedRecording.alert_count)}
+                />
+                <Fact
+                  label="Anomaly count"
+                  value={formatNullableMetric(selectedRecording.anomaly_count)}
+                />
+                <Fact
+                  label="IGOR count"
+                  value={formatNullableMetric(selectedRecording.igor_count)}
+                />
+              </dl>
+              <p className="text-xs leading-6 text-[var(--color-text-tertiary)]">
+                Extended per-session metrics will populate automatically once the backend exposes richer recording summaries. The current frontend already preserves that interface.
+              </p>
+            </div>
+          ) : (
+            <EmptyState
+              title="Choose a session"
+              message="Select a recording to inspect it here and use it as the playback source."
+              compact
+            />
+          )}
+        </Panel>
+      </div>
     </div>
   );
 }
@@ -273,8 +338,10 @@ function Fact({
   mono?: boolean;
 }) {
   return (
-    <div className="orbit-card p-4">
-      <dt className="text-xs uppercase tracking-[0.18em] text-[var(--color-text-tertiary)]">{label}</dt>
+    <div className="rounded-2xl border border-[var(--color-border-secondary)] bg-[var(--color-surface-subtle)] px-4 py-3">
+      <dt className="text-[0.68rem] uppercase tracking-[0.18em] text-[var(--color-text-tertiary)]">
+        {label}
+      </dt>
       <dd
         className={[
           "mt-2 text-sm text-[var(--color-text-primary)]",
@@ -287,4 +354,8 @@ function Fact({
       </dd>
     </div>
   );
+}
+
+function formatNullableMetric(value: number | null) {
+  return value === null ? "Unavailable" : `${value}`;
 }

@@ -1,7 +1,11 @@
 import { describe, expect, test } from "vitest";
 
 import { TelemetryStore } from "@/services/telemetry-store";
-import { type InitialTelemetrySnapshot, type TelemetryEvent } from "@/services/types";
+import {
+  type IgorAssessment,
+  type InitialTelemetrySnapshot,
+  type TelemetryEvent,
+} from "@/services/types";
 
 function initialSnapshot(): InitialTelemetrySnapshot {
   return {
@@ -22,11 +26,13 @@ function initialSnapshot(): InitialTelemetrySnapshot {
         peak_count: 0,
         anomaly_count: 0,
         alert_count: 0,
+        igor_count: 0,
         reconnect_attempts: 0,
         sweeps_per_second: 0,
         peaks_per_second: 0,
         anomalies_per_second: 0,
         alerts_per_second: 0,
+        igor_per_second: 0,
       },
       config: {
         freq_range_mhz: "2400:2500",
@@ -34,6 +40,8 @@ function initialSnapshot(): InitialTelemetrySnapshot {
         peak_threshold_db: -35,
         occupancy_window_seconds: 300,
         occupancy_recent_window_seconds: 60,
+        igor_correlation_window_seconds: 30,
+        igor_score_threshold: 60,
       },
       current_recording: {
         active: false,
@@ -51,6 +59,7 @@ function initialSnapshot(): InitialTelemetrySnapshot {
       },
     },
     alerts: [],
+    igorAssessments: [],
     occupancy: null,
   };
 }
@@ -68,6 +77,23 @@ function sweepEvent(sequence: number): TelemetryEvent {
       sample_count: 20,
       power_values: [-20, -40],
     },
+  };
+}
+
+function igorAssessment(id: string): IgorAssessment {
+  return {
+    id,
+    generated_at_ms: 1,
+    source_sequence: 1,
+    finding_kind: "coordinated_emitter",
+    severity: "critical",
+    risk_score: 100,
+    frequency_start_hz: 2_400_000_000,
+    frequency_end_hz: 2_401_000_000,
+    evidence_count: 4,
+    distinct_anomaly_types: ["power_spike", "repeated_pulses"],
+    max_power: -8,
+    message: "IGOR correlated the activity.",
   };
 }
 
@@ -92,5 +118,23 @@ describe("TelemetryStore", () => {
     expect(snapshot.sweeps).toHaveLength(96);
     expect(snapshot.sweeps[0]?.sequence).toBe(14);
     expect(snapshot.sweeps.at(-1)?.sequence).toBe(109);
+  });
+
+  test("hydrates and ingests igor assessments", () => {
+    const store = new TelemetryStore();
+    store.hydrate({
+      ...initialSnapshot(),
+      igorAssessments: [igorAssessment("igor-1")],
+    });
+
+    store.ingest({
+      type: "igor_assessment",
+      data: igorAssessment("igor-2"),
+    });
+
+    const snapshot = store.getSnapshot();
+    expect(snapshot.igorAssessments).toHaveLength(2);
+    expect(snapshot.igorAssessments[0]?.id).toBe("igor-1");
+    expect(snapshot.igorAssessments[1]?.id).toBe("igor-2");
   });
 });

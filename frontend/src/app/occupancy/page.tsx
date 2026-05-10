@@ -1,5 +1,5 @@
-import { OccupancyDashboard } from "@/components/occupancy-dashboard";
+import { redirect } from "next/navigation";
 
 export default function OccupancyPage() {
-  return <OccupancyDashboard />;
+  redirect("/?section=occupancy");
 }

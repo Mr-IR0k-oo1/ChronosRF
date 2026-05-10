@@ -1,16 +1,22 @@
+#[allow(dead_code)]
+mod attack_simulator;
 mod config;
 mod core;
 mod detection;
+mod igor;
 mod ml;
 mod models;
 mod recording;
 mod sdr;
+mod simulation_validator;
 mod state;
 mod websocket;
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
+use attack_simulator::AttackScenario;
 use clap::{Parser, Subcommand};
 use tokio::sync::{broadcast, mpsc};
 
@@ -52,6 +58,14 @@ enum Commands {
         #[arg(long)]
         report: PathBuf,
     },
+    ValidateSimulatedAttack {
+        #[arg(long)]
+        simulator: Option<PathBuf>,
+        #[arg(long, value_enum, default_value_t = AttackScenario::CoordinatedEmitter)]
+        scenario: AttackScenario,
+        #[arg(long, default_value_t = 8)]
+        timeout_seconds: u64,
+    },
 }
 
 #[tokio::main]
@@ -81,6 +95,11 @@ async fn main() -> Result<()> {
             );
             Ok(())
         }
+        Commands::ValidateSimulatedAttack {
+            simulator,
+            scenario,
+            timeout_seconds,
+        } => validate_simulated_attack(config, simulator, scenario, timeout_seconds).await,
     }
 }
 
@@ -157,5 +176,47 @@ async fn validate_sweep(
         "Captured {} sweep lines in {} seconds ({} parsed, {} malformed).",
         result.total_lines, duration_seconds, result.parsed_lines, result.malformed_lines
     );
+    Ok(())
+}
+
+async fn validate_simulated_attack(
+    config: Arc<Config>,
+    simulator: Option<PathBuf>,
+    scenario: AttackScenario,
+    timeout_seconds: u64,
+) -> Result<()> {
+    let simulator_path = simulator
+        .map(Ok)
+        .unwrap_or_else(simulation_validator::default_simulator_path)?;
+    let report = simulation_validator::validate_simulated_attack(
+        &simulator_path,
+        &config,
+        Duration::from_secs(timeout_seconds.max(1)),
+    )
+    .await?;
+
+    println!(
+        "Validated scenario {:?} with simulator {}. Sweeps: {}, peaks: {}, anomalies: {}, alerts: {}, IGOR assessments: {}.",
+        scenario,
+        simulator_path.display(),
+        report.sweeps,
+        report.peaks,
+        report.anomalies.len(),
+        report.alerts.len(),
+        report.igor_assessments.len()
+    );
+
+    for assessment in report.igor_assessments {
+        println!(
+            "- {:?} severity {:?} score {} at {}-{} MHz: {}",
+            assessment.finding_kind,
+            assessment.severity,
+            assessment.risk_score,
+            assessment.frequency_start_hz / 1_000_000,
+            assessment.frequency_end_hz / 1_000_000,
+            assessment.message
+        );
+    }
+
     Ok(())
 }

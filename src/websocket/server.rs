@@ -14,12 +14,12 @@ use tower_http::cors::CorsLayer;
 
 use crate::core::errors::Result;
 use crate::core::logger;
-use crate::models::{PlaybackStatus, RecordingFileSummary, RecordingStatus, TelemetryEvent};
+use crate::models::{IgorAssessment, PlaybackStatus, RecordingFileSummary, RecordingStatus, TelemetryEvent};
 use crate::recording::recorder::list_recordings;
 use crate::state::{AppState, ControlCommand};
 
 #[derive(serde::Deserialize)]
-struct AlertsQuery {
+struct EventsQuery {
     limit: Option<usize>,
 }
 
@@ -55,6 +55,7 @@ pub fn build_router(app_state: AppState) -> Router {
         .route("/api/health", get(get_health))
         .route("/api/status", get(get_status))
         .route("/api/alerts", get(get_alerts))
+        .route("/api/igor", get(get_igor_assessments))
         .route("/api/occupancy", get(get_occupancy))
         .route("/api/recordings", get(get_recordings))
         .route("/api/recordings/start", post(start_recording))
@@ -81,7 +82,7 @@ async fn get_status(State(app_state): State<AppState>) -> Json<crate::models::Sy
 
 async fn get_alerts(
     State(app_state): State<AppState>,
-    Query(query): Query<AlertsQuery>,
+    Query(query): Query<EventsQuery>,
 ) -> Json<Vec<crate::models::AlertEvent>> {
     let snapshots = app_state.snapshots().await;
     let limit = query.limit.unwrap_or(50);
@@ -90,6 +91,19 @@ async fn get_alerts(
         alerts = alerts.split_off(alerts.len() - limit);
     }
     Json(alerts)
+}
+
+async fn get_igor_assessments(
+    State(app_state): State<AppState>,
+    Query(query): Query<EventsQuery>,
+) -> Json<Vec<IgorAssessment>> {
+    let snapshots = app_state.snapshots().await;
+    let limit = query.limit.unwrap_or(50);
+    let mut assessments = snapshots.igor_assessments.into_iter().collect::<Vec<_>>();
+    if assessments.len() > limit {
+        assessments = assessments.split_off(assessments.len() - limit);
+    }
+    Json(assessments)
 }
 
 async fn get_occupancy(
@@ -206,6 +220,11 @@ async fn client_session(mut socket: WebSocket, app_state: AppState) {
             return;
         }
     }
+    for assessment in snapshots.igor_assessments {
+        if !send_event(&mut socket, &TelemetryEvent::IgorAssessment(assessment)).await {
+            return;
+        }
+    }
 
     loop {
         match telemetry_rx.recv().await {
@@ -263,22 +282,57 @@ fn service_unavailable(message: impl ToString) -> ApiError {
 
 #[cfg(test)]
 mod tests {
+    use std::net::{Ipv4Addr, SocketAddr};
+    use std::time::Duration;
+
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
+    use futures_util::StreamExt;
     use http_body_util::BodyExt;
+    use serde::de::DeserializeOwned;
+    use tokio::net::TcpListener;
+    use tokio::task::JoinHandle;
+    use tokio::time::timeout;
+    use tokio_tungstenite::connect_async;
     use tower::ServiceExt;
 
     use crate::config::Config;
-    use crate::models::{AlertEvent, AlertSeverity, TelemetryEvent};
-    use crate::state::ServiceState;
+    use crate::models::{
+        AlertEvent, AlertSeverity, CaptureMode, HealthState, HealthStatus, IgorAssessment,
+        IgorFindingKind, OccupancySnapshot, PlaybackStatus, RecordingStatus, TelemetryEvent,
+    };
+    use crate::state::{AppState, ServiceState};
 
     use super::build_router;
 
-    async fn test_state() -> crate::state::AppState {
+    async fn test_state() -> AppState {
         let config = std::sync::Arc::new(Config::from_env().expect("config should load"));
         let (telemetry_tx, _) = tokio::sync::broadcast::channel(64);
         let (control_tx, _control_rx) = tokio::sync::mpsc::channel(4);
         ServiceState::new(config, telemetry_tx, control_tx, 123)
+    }
+
+    async fn read_json<T: DeserializeOwned>(response: axum::response::Response) -> T {
+        let body = response
+            .into_body()
+            .collect()
+            .await
+            .expect("body should read")
+            .to_bytes();
+        serde_json::from_slice(&body).expect("body should deserialize")
+    }
+
+    async fn spawn_test_server(app_state: AppState) -> (String, JoinHandle<()>) {
+        let listener = TcpListener::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
+            .await
+            .expect("listener should bind");
+        let addr = listener.local_addr().expect("listener should have an address");
+        let server = tokio::spawn(async move {
+            axum::serve(listener, build_router(app_state))
+                .await
+                .expect("test server should run");
+        });
+        (format!("ws://{addr}/ws"), server)
     }
 
     #[tokio::test]
@@ -341,5 +395,393 @@ mod tests {
 
         assert_eq!(alerts.len(), 1);
         assert_eq!(alerts[0].id, "2");
+    }
+
+    #[tokio::test]
+    async fn igor_endpoint_honors_limit() {
+        let app_state = test_state().await;
+        let hub = app_state.telemetry_hub();
+        hub.publish(TelemetryEvent::IgorAssessment(IgorAssessment {
+            id: "igor-1".to_string(),
+            generated_at_ms: 1,
+            source_sequence: 1,
+            finding_kind: IgorFindingKind::PersistentEmitter,
+            severity: AlertSeverity::High,
+            risk_score: 70,
+            frequency_start_hz: 1,
+            frequency_end_hz: 2,
+            evidence_count: 3,
+            distinct_anomaly_types: vec![crate::models::AnomalyType::BurstActivity],
+            max_power: -20.0,
+            message: "first".to_string(),
+        }))
+        .await;
+        hub.publish(TelemetryEvent::IgorAssessment(IgorAssessment {
+            id: "igor-2".to_string(),
+            generated_at_ms: 2,
+            source_sequence: 2,
+            finding_kind: IgorFindingKind::CoordinatedEmitter,
+            severity: AlertSeverity::Critical,
+            risk_score: 92,
+            frequency_start_hz: 2,
+            frequency_end_hz: 3,
+            evidence_count: 4,
+            distinct_anomaly_types: vec![crate::models::AnomalyType::PowerSpike],
+            max_power: -10.0,
+            message: "second".to_string(),
+        }))
+        .await;
+
+        let response = build_router(app_state)
+            .oneshot(
+                Request::builder()
+                    .uri("/api/igor?limit=1")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .expect("request should succeed");
+        let assessments: Vec<IgorAssessment> = read_json(response).await;
+
+        assert_eq!(assessments.len(), 1);
+        assert_eq!(assessments[0].id, "igor-2");
+    }
+
+    #[tokio::test]
+    async fn status_and_health_endpoints_stay_consistent_across_live_degraded_and_playback() {
+        let app_state = test_state().await;
+        let hub = app_state.telemetry_hub();
+        let mut live_status = app_state.snapshots().await.status;
+        let live_recording = RecordingStatus {
+            active: true,
+            session_id: Some("rec-1".to_string()),
+            file_path: Some("recordings/rec-1.jsonl".to_string()),
+            started_at_ms: Some(10),
+            event_count: 4,
+        };
+        let idle_playback = PlaybackStatus::default();
+        live_status.current_mode = CaptureMode::Live;
+        live_status.last_sweep_sequence = Some(7);
+        live_status.last_sweep_at_ms = Some(77);
+        live_status.current_recording = live_recording.clone();
+        live_status.current_playback = idle_playback.clone();
+
+        hub.publish(TelemetryEvent::Health(HealthStatus::online(
+            "hackrf_sweep.exe",
+            "Live capture active.",
+        )))
+        .await;
+        hub.publish(TelemetryEvent::RecordingStatus(live_recording.clone()))
+            .await;
+        hub.publish(TelemetryEvent::PlaybackStatus(idle_playback.clone()))
+            .await;
+        hub.publish(TelemetryEvent::Status(live_status.clone())).await;
+
+        let live_health_response = build_router(app_state.clone())
+            .oneshot(
+                Request::builder()
+                    .uri("/api/health")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .expect("live health request should succeed");
+        let live_status_response = build_router(app_state.clone())
+            .oneshot(
+                Request::builder()
+                    .uri("/api/status")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .expect("live status request should succeed");
+        let live_health: HealthStatus = read_json(live_health_response).await;
+        let live_status_snapshot: crate::models::SystemStatus = read_json(live_status_response).await;
+
+        assert_eq!(live_health.state, HealthState::Online);
+        assert_eq!(live_status_snapshot.current_mode, CaptureMode::Live);
+        assert_eq!(live_status_snapshot.last_sweep_sequence, Some(7));
+        assert_eq!(live_status_snapshot.current_recording, live_recording);
+
+        let playback_status = PlaybackStatus {
+            active: true,
+            file_path: Some("recordings/playback.jsonl".to_string()),
+            speed: 2.0,
+            started_at_ms: Some(100),
+            emitted_events: 3,
+        };
+        let mut playback_mode_status = live_status_snapshot.clone();
+        playback_mode_status.current_mode = CaptureMode::Playback;
+        playback_mode_status.current_playback = playback_status.clone();
+
+        hub.publish(TelemetryEvent::Health(HealthStatus::degraded(
+            "hackrf_sweep.exe",
+            "Live capture paused while playback is active.",
+            None,
+        )))
+        .await;
+        hub.publish(TelemetryEvent::PlaybackStatus(playback_status.clone()))
+            .await;
+        hub.publish(TelemetryEvent::Status(playback_mode_status.clone()))
+            .await;
+
+        let playback_health_response = build_router(app_state.clone())
+            .oneshot(
+                Request::builder()
+                    .uri("/api/health")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .expect("playback health request should succeed");
+        let playback_status_response = build_router(app_state.clone())
+            .oneshot(
+                Request::builder()
+                    .uri("/api/status")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .expect("playback status request should succeed");
+        let playback_health: HealthStatus = read_json(playback_health_response).await;
+        let playback_status_snapshot: crate::models::SystemStatus =
+            read_json(playback_status_response).await;
+
+        assert_eq!(playback_health.state, HealthState::Degraded);
+        assert!(playback_health.message.contains("playback"));
+        assert_eq!(playback_status_snapshot.current_mode, CaptureMode::Playback);
+        assert_eq!(playback_status_snapshot.current_playback, playback_status);
+
+        let mut degraded_live_status = playback_status_snapshot.clone();
+        degraded_live_status.current_mode = CaptureMode::Live;
+        degraded_live_status.current_playback.active = false;
+        hub.publish(TelemetryEvent::Health(HealthStatus::degraded(
+            "hackrf_sweep.exe",
+            "Sweep capture exited with code Some(1); restarting.",
+            Some("simulated capture exit".to_string()),
+        )))
+        .await;
+        hub.publish(TelemetryEvent::PlaybackStatus(
+            degraded_live_status.current_playback.clone(),
+        ))
+        .await;
+        hub.publish(TelemetryEvent::Status(degraded_live_status.clone()))
+            .await;
+
+        let degraded_health_response = build_router(app_state.clone())
+            .oneshot(
+                Request::builder()
+                    .uri("/api/health")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .expect("degraded health request should succeed");
+        let degraded_status_response = build_router(app_state)
+            .oneshot(
+                Request::builder()
+                    .uri("/api/status")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .expect("degraded status request should succeed");
+        let degraded_health: HealthStatus = read_json(degraded_health_response).await;
+        let degraded_status_snapshot: crate::models::SystemStatus =
+            read_json(degraded_status_response).await;
+
+        assert_eq!(degraded_health.state, HealthState::Degraded);
+        assert!(degraded_health.message.contains("restarting"));
+        assert_eq!(degraded_status_snapshot.current_mode, CaptureMode::Live);
+        assert!(!degraded_status_snapshot.current_playback.active);
+        assert_eq!(degraded_status_snapshot.current_recording.session_id, Some("rec-1".to_string()));
+    }
+
+    #[tokio::test]
+    async fn websocket_bootstrap_emits_snapshot_sequence_in_order() {
+        let app_state = test_state().await;
+        let hub = app_state.telemetry_hub();
+        let mut status = app_state.snapshots().await.status;
+        let recording_status = RecordingStatus {
+            active: true,
+            session_id: Some("rec-7".to_string()),
+            file_path: Some("recordings/rec-7.jsonl".to_string()),
+            started_at_ms: Some(70),
+            event_count: 9,
+        };
+        let playback_status = PlaybackStatus::default();
+        let occupancy = OccupancySnapshot {
+            generated_at_ms: 90,
+            window_seconds: 300,
+            bins: Vec::new(),
+        };
+        status.current_mode = CaptureMode::Live;
+        status.last_sweep_sequence = Some(42);
+        status.last_sweep_at_ms = Some(99);
+        status.current_recording = recording_status.clone();
+        status.current_playback = playback_status.clone();
+
+        hub.publish(TelemetryEvent::Health(HealthStatus::online(
+            "hackrf_sweep.exe",
+            "Live capture active.",
+        )))
+        .await;
+        hub.publish(TelemetryEvent::Status(status)).await;
+        hub.publish(TelemetryEvent::RecordingStatus(recording_status.clone()))
+            .await;
+        hub.publish(TelemetryEvent::PlaybackStatus(playback_status.clone()))
+            .await;
+        hub.publish(TelemetryEvent::Occupancy(occupancy.clone())).await;
+        hub.publish(TelemetryEvent::Alert(AlertEvent {
+            id: "a-1".to_string(),
+            alert_type: "burst_activity".to_string(),
+            severity: AlertSeverity::High,
+            message: "first".to_string(),
+            detected_at_ms: 1,
+            source_sequence: Some(1),
+            frequency_start_hz: Some(10),
+            frequency_end_hz: Some(20),
+            power: Some(-20.0),
+        }))
+        .await;
+        hub.publish(TelemetryEvent::Alert(AlertEvent {
+            id: "a-2".to_string(),
+            alert_type: "power_spike".to_string(),
+            severity: AlertSeverity::Critical,
+            message: "second".to_string(),
+            detected_at_ms: 2,
+            source_sequence: Some(2),
+            frequency_start_hz: Some(20),
+            frequency_end_hz: Some(30),
+            power: Some(-10.0),
+        }))
+        .await;
+
+        let (url, server) = spawn_test_server(app_state).await;
+        let (mut socket, _) = connect_async(url)
+            .await
+            .expect("websocket client should connect");
+        let mut received = Vec::new();
+
+        for _ in 0..7 {
+            let message = timeout(Duration::from_secs(5), socket.next())
+                .await
+                .expect("websocket message should arrive")
+                .expect("websocket stream should remain open")
+                .expect("websocket message should be valid");
+            let text = message.into_text().expect("bootstrap frame should be text");
+            let event = serde_json::from_str::<TelemetryEvent>(&text)
+                .expect("bootstrap payload should deserialize");
+            received.push(event);
+        }
+
+        server.abort();
+        let _ = server.await;
+
+        assert!(matches!(received[0], TelemetryEvent::Health(_)));
+        assert!(matches!(received[1], TelemetryEvent::Status(_)));
+        assert!(matches!(received[2], TelemetryEvent::RecordingStatus(_)));
+        assert!(matches!(received[3], TelemetryEvent::PlaybackStatus(_)));
+        assert!(matches!(received[4], TelemetryEvent::Occupancy(_)));
+        assert!(matches!(received[5], TelemetryEvent::Alert(_)));
+        assert!(matches!(received[6], TelemetryEvent::Alert(_)));
+
+        match &received[1] {
+            TelemetryEvent::Status(status) => {
+                assert_eq!(status.last_sweep_sequence, Some(42));
+            }
+            _ => panic!("second bootstrap event should be status"),
+        }
+
+        match &received[2] {
+            TelemetryEvent::RecordingStatus(status) => {
+                assert_eq!(status.session_id.as_deref(), Some("rec-7"));
+            }
+            _ => panic!("third bootstrap event should be recording status"),
+        }
+
+        match &received[5] {
+            TelemetryEvent::Alert(alert) => assert_eq!(alert.id, "a-1"),
+            _ => panic!("sixth bootstrap event should be the first alert"),
+        }
+
+        match &received[6] {
+            TelemetryEvent::Alert(alert) => assert_eq!(alert.id, "a-2"),
+            _ => panic!("seventh bootstrap event should be the second alert"),
+        }
+    }
+
+    #[tokio::test]
+    async fn websocket_bootstrap_includes_igor_assessments_after_alerts() {
+        let app_state = test_state().await;
+        let hub = app_state.telemetry_hub();
+
+        hub.publish(TelemetryEvent::Health(HealthStatus::online(
+            "hackrf_sweep.exe",
+            "Live capture active.",
+        )))
+        .await;
+        hub.publish(TelemetryEvent::Status(app_state.snapshots().await.status))
+            .await;
+        hub.publish(TelemetryEvent::RecordingStatus(RecordingStatus::default()))
+            .await;
+        hub.publish(TelemetryEvent::PlaybackStatus(PlaybackStatus::default()))
+            .await;
+        hub.publish(TelemetryEvent::Occupancy(OccupancySnapshot::default()))
+            .await;
+        hub.publish(TelemetryEvent::Alert(AlertEvent {
+            id: "a-1".to_string(),
+            alert_type: "burst_activity".to_string(),
+            severity: AlertSeverity::High,
+            message: "first".to_string(),
+            detected_at_ms: 1,
+            source_sequence: Some(1),
+            frequency_start_hz: Some(10),
+            frequency_end_hz: Some(20),
+            power: Some(-20.0),
+        }))
+        .await;
+        hub.publish(TelemetryEvent::IgorAssessment(IgorAssessment {
+            id: "igor-1".to_string(),
+            generated_at_ms: 2,
+            source_sequence: 2,
+            finding_kind: IgorFindingKind::CoordinatedEmitter,
+            severity: AlertSeverity::Critical,
+            risk_score: 90,
+            frequency_start_hz: 20,
+            frequency_end_hz: 30,
+            evidence_count: 5,
+            distinct_anomaly_types: vec![
+                crate::models::AnomalyType::RepeatedPulses,
+                crate::models::AnomalyType::PowerSpike,
+            ],
+            max_power: -10.0,
+            message: "igor".to_string(),
+        }))
+        .await;
+
+        let (url, server) = spawn_test_server(app_state).await;
+        let (mut socket, _) = connect_async(url)
+            .await
+            .expect("websocket client should connect");
+        let mut received = Vec::new();
+
+        for _ in 0..7 {
+            let message = timeout(Duration::from_secs(5), socket.next())
+                .await
+                .expect("websocket message should arrive")
+                .expect("websocket stream should remain open")
+                .expect("websocket message should be valid");
+            let text = message.into_text().expect("bootstrap frame should be text");
+            let event = serde_json::from_str::<TelemetryEvent>(&text)
+                .expect("bootstrap payload should deserialize");
+            received.push(event);
+        }
+
+        server.abort();
+        let _ = server.await;
+
+        assert!(matches!(received[5], TelemetryEvent::Alert(_)));
+        assert!(matches!(received[6], TelemetryEvent::IgorAssessment(_)));
     }
 }

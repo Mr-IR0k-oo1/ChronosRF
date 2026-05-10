@@ -70,6 +70,11 @@ pub struct Config {
     pub repeated_pulse_window: Duration,
     pub repeated_pulse_min_count: usize,
     pub sustained_critical_period: Duration,
+    pub igor_correlation_window: Duration,
+    pub igor_min_peak_count: usize,
+    pub igor_persistence_window: Duration,
+    pub igor_score_threshold: u32,
+    pub igor_buffer_size: usize,
     pub recordings_dir: PathBuf,
     pub datasets_dir: PathBuf,
     pub default_playback_speed: f32,
@@ -109,6 +114,13 @@ impl Config {
             read_env("SPECTRAGUARD_REPEATED_PULSE_MIN_COUNT", "3")?;
         let sustained_critical_seconds =
             read_env("SPECTRAGUARD_SUSTAINED_CRITICAL_SECONDS", "30")?;
+        let igor_correlation_window_seconds =
+            read_env("SPECTRAGUARD_IGOR_CORRELATION_WINDOW_SECONDS", "30")?;
+        let igor_min_peak_count = read_env("SPECTRAGUARD_IGOR_MIN_PEAK_COUNT", "3")?;
+        let igor_persistence_window_seconds =
+            read_env("SPECTRAGUARD_IGOR_PERSISTENCE_WINDOW_SECONDS", "15")?;
+        let igor_score_threshold = read_env("SPECTRAGUARD_IGOR_SCORE_THRESHOLD", "60")?;
+        let igor_buffer_size = read_env("SPECTRAGUARD_IGOR_BUFFER_SIZE", "128")?;
         let recordings_dir = read_path("SPECTRAGUARD_RECORDINGS_DIR", "recordings");
         let datasets_dir = read_path("SPECTRAGUARD_DATASETS_DIR", "datasets");
         let default_playback_speed = read_env("SPECTRAGUARD_DEFAULT_PLAYBACK_SPEED", "1.0")?;
@@ -158,6 +170,21 @@ impl Config {
             bail!("SPECTRAGUARD_SUSTAINED_CRITICAL_SECONDS must be greater than zero");
         }
 
+        if igor_correlation_window_seconds == 0
+            || igor_persistence_window_seconds == 0
+            || igor_min_peak_count == 0
+        {
+            bail!("IGOR thresholds must be positive");
+        }
+
+        if igor_score_threshold > 100 {
+            bail!("SPECTRAGUARD_IGOR_SCORE_THRESHOLD must be between 0 and 100");
+        }
+
+        if igor_buffer_size == 0 {
+            bail!("SPECTRAGUARD_IGOR_BUFFER_SIZE must be greater than zero");
+        }
+
         if default_playback_speed <= 0.0 {
             bail!("SPECTRAGUARD_DEFAULT_PLAYBACK_SPEED must be greater than zero");
         }
@@ -188,6 +215,11 @@ impl Config {
             repeated_pulse_window: Duration::from_secs(repeated_pulse_window_seconds),
             repeated_pulse_min_count,
             sustained_critical_period: Duration::from_secs(sustained_critical_seconds),
+            igor_correlation_window: Duration::from_secs(igor_correlation_window_seconds),
+            igor_min_peak_count,
+            igor_persistence_window: Duration::from_secs(igor_persistence_window_seconds),
+            igor_score_threshold,
+            igor_buffer_size,
             recordings_dir,
             datasets_dir,
             default_playback_speed,

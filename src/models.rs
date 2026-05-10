@@ -34,6 +34,14 @@ pub enum AnomalyType {
     RepeatedPulses,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IgorFindingKind {
+    CoordinatedEmitter,
+    PersistentEmitter,
+    EscalatingBandActivity,
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct SweepData {
     pub sequence: u64,
@@ -161,11 +169,13 @@ pub struct StatusMetrics {
     pub peak_count: u64,
     pub anomaly_count: u64,
     pub alert_count: u64,
+    pub igor_count: u64,
     pub reconnect_attempts: u64,
     pub sweeps_per_second: f32,
     pub peaks_per_second: f32,
     pub anomalies_per_second: f32,
     pub alerts_per_second: f32,
+    pub igor_per_second: f32,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -175,6 +185,8 @@ pub struct StatusConfigSnapshot {
     pub peak_threshold_db: f32,
     pub occupancy_window_seconds: u64,
     pub occupancy_recent_window_seconds: u64,
+    pub igor_correlation_window_seconds: u64,
+    pub igor_score_threshold: u32,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -234,6 +246,22 @@ pub struct AlertEvent {
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct IgorAssessment {
+    pub id: String,
+    pub generated_at_ms: u64,
+    pub source_sequence: u64,
+    pub finding_kind: IgorFindingKind,
+    pub severity: AlertSeverity,
+    pub risk_score: u32,
+    pub frequency_start_hz: u64,
+    pub frequency_end_hz: u64,
+    pub evidence_count: u64,
+    pub distinct_anomaly_types: Vec<AnomalyType>,
+    pub max_power: f32,
+    pub message: String,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct RecordingFileSummary {
     pub session_id: String,
     pub file_path: String,
@@ -266,6 +294,8 @@ pub enum TelemetryEvent {
     Anomaly(AnomalyEvent),
     #[serde(rename = "alert")]
     Alert(AlertEvent),
+    #[serde(rename = "igor_assessment")]
+    IgorAssessment(IgorAssessment),
     #[serde(rename = "recording_status")]
     RecordingStatus(RecordingStatus),
     #[serde(rename = "playback_status")]
@@ -282,6 +312,7 @@ impl TelemetryEvent {
             Self::Occupancy(_) => "occupancy",
             Self::Anomaly(_) => "anomaly",
             Self::Alert(_) => "alert",
+            Self::IgorAssessment(_) => "igor_assessment",
             Self::RecordingStatus(_) => "recording_status",
             Self::PlaybackStatus(_) => "playback_status",
         }
@@ -295,6 +326,7 @@ impl TelemetryEvent {
                 | Self::Occupancy(_)
                 | Self::Anomaly(_)
                 | Self::Alert(_)
+                | Self::IgorAssessment(_)
         )
     }
 }

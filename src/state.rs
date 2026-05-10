@@ -7,8 +7,8 @@ use tokio::sync::{RwLock, broadcast, mpsc, oneshot};
 use crate::config::Config;
 use crate::core::errors::Result;
 use crate::models::{
-    AlertEvent, CaptureMode, HealthStatus, OccupancySnapshot, PlaybackStatus, RecordingStatus,
-    StatusConfigSnapshot, SystemStatus, TelemetryEvent,
+    AlertEvent, CaptureMode, HealthStatus, IgorAssessment, OccupancySnapshot, PlaybackStatus,
+    RecordingStatus, StatusConfigSnapshot, SystemStatus, TelemetryEvent,
 };
 
 pub type AppState = Arc<ServiceState>;
@@ -26,6 +26,7 @@ pub struct SnapshotStore {
     pub status: SystemStatus,
     pub occupancy: OccupancySnapshot,
     pub alerts: VecDeque<AlertEvent>,
+    pub igor_assessments: VecDeque<IgorAssessment>,
     pub recording_status: RecordingStatus,
     pub playback_status: PlaybackStatus,
 }
@@ -74,6 +75,8 @@ impl ServiceState {
                 peak_threshold_db: config.peak_threshold_db,
                 occupancy_window_seconds: config.occupancy_window_seconds,
                 occupancy_recent_window_seconds: config.occupancy_recent_window_seconds,
+                igor_correlation_window_seconds: config.igor_correlation_window.as_secs(),
+                igor_score_threshold: config.igor_score_threshold,
             },
             current_recording: recording_status.clone(),
             current_playback: playback_status.clone(),
@@ -88,6 +91,7 @@ impl ServiceState {
                 status,
                 occupancy: OccupancySnapshot::default(),
                 alerts: VecDeque::new(),
+                igor_assessments: VecDeque::new(),
                 recording_status,
                 playback_status,
             }),
@@ -119,6 +123,12 @@ impl TelemetryHub {
                         snapshots.alerts.pop_front();
                     }
                 }
+                TelemetryEvent::IgorAssessment(assessment) => {
+                    snapshots.igor_assessments.push_back(assessment.clone());
+                    while snapshots.igor_assessments.len() > self.state.config.igor_buffer_size {
+                        snapshots.igor_assessments.pop_front();
+                    }
+                }
                 TelemetryEvent::RecordingStatus(status) => {
                     snapshots.recording_status = status.clone();
                     snapshots.status.current_recording = status.clone();
@@ -136,5 +146,70 @@ impl TelemetryHub {
         }
 
         let _ = self.state.telemetry_tx.send(event);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use tokio::sync::{broadcast, mpsc};
+
+    use crate::config::Config;
+    use crate::models::{AlertSeverity, AnomalyType, IgorAssessment, IgorFindingKind, TelemetryEvent};
+
+    use super::ServiceState;
+
+    #[tokio::test]
+    async fn retains_latest_igor_assessments_within_buffer_limit() {
+        let mut config = Config::from_env().expect("config should load");
+        config.igor_buffer_size = 1;
+        let config = Arc::new(config);
+        let (telemetry_tx, _) = broadcast::channel(8);
+        let (control_tx, _control_rx) = mpsc::channel(1);
+        let state = ServiceState::new(config, telemetry_tx, control_tx, 1);
+        let hub = state.telemetry_hub();
+
+        hub.publish(TelemetryEvent::IgorAssessment(IgorAssessment {
+            id: "igor-1".to_string(),
+            generated_at_ms: 1,
+            source_sequence: 1,
+            finding_kind: IgorFindingKind::PersistentEmitter,
+            severity: AlertSeverity::High,
+            risk_score: 70,
+            frequency_start_hz: 1,
+            frequency_end_hz: 2,
+            evidence_count: 2,
+            distinct_anomaly_types: vec![AnomalyType::BurstActivity],
+            max_power: -20.0,
+            message: "first".to_string(),
+        }))
+        .await;
+        hub.publish(TelemetryEvent::IgorAssessment(IgorAssessment {
+            id: "igor-2".to_string(),
+            generated_at_ms: 2,
+            source_sequence: 2,
+            finding_kind: IgorFindingKind::CoordinatedEmitter,
+            severity: AlertSeverity::Critical,
+            risk_score: 90,
+            frequency_start_hz: 2,
+            frequency_end_hz: 3,
+            evidence_count: 3,
+            distinct_anomaly_types: vec![AnomalyType::PowerSpike],
+            max_power: -10.0,
+            message: "second".to_string(),
+        }))
+        .await;
+
+        let snapshots = state.snapshots().await;
+        assert_eq!(snapshots.igor_assessments.len(), 1);
+        assert_eq!(
+            snapshots
+                .igor_assessments
+                .front()
+                .expect("assessment should exist")
+                .id,
+            "igor-2"
+        );
     }
 }

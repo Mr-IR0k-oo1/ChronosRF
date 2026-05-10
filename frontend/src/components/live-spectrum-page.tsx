@@ -1,6 +1,8 @@
 "use client";
 
-import { useDeferredValue } from "react";
+import Link from "next/link";
+import { useSearchParams } from "next/navigation";
+import { useDeferredValue, useMemo } from "react";
 import {
   CartesianGrid,
   Line,
@@ -11,58 +13,119 @@ import {
   YAxis,
 } from "recharts";
 
+import { EmptyState } from "@/components/empty-state";
 import { KpiCard } from "@/components/kpi-card";
 import { Panel } from "@/components/panel";
+import { StateBanner } from "@/components/state-banner";
 import { WaterfallCanvas } from "@/components/waterfall-canvas";
 import { useTelemetry } from "@/hooks/use-telemetry";
-import { formatFrequency, formatPower, formatTimestamp } from "@/services/format";
+import {
+  formatCaptureMode,
+  formatFrequency,
+  formatFrequencyRange,
+  formatPower,
+  formatRelativeAge,
+  formatTimestamp,
+} from "@/services/format";
+import { getOperationalState } from "@/services/telemetry-view";
+import {
+  buildSpectrumChartData,
+  getOccupancyHotspots,
+  getPrioritizedAlerts,
+} from "@/services/telemetry-view";
+
+const tooltipContentStyle = {
+  background: "var(--color-surface-strong)",
+  border: "1px solid var(--color-border-secondary)",
+  borderRadius: 16,
+};
 
 export function LiveSpectrumPage() {
+  const searchParams = useSearchParams();
   const telemetry = useTelemetry();
   const sweeps = useDeferredValue(telemetry.sweeps);
   const peaks = useDeferredValue(telemetry.peaks);
   const latestSweep = sweeps.at(-1) ?? null;
   const latestPeak = peaks.at(-1) ?? null;
-
-  const chartData =
-    latestSweep?.power_values.map((power, index) => ({
-      frequencyMHz:
-        ((latestSweep.frequency_start_hz + latestSweep.bin_width_hz * index) /
-          1_000_000) as number,
-      power,
-    })) ?? [];
+  const operational = useMemo(() => getOperationalState(telemetry), [telemetry]);
+  const chartData = useMemo(
+    () => buildSpectrumChartData(latestSweep),
+    [latestSweep],
+  );
+  const prioritizedAlerts = useMemo(
+    () => getPrioritizedAlerts(telemetry.alerts, 5),
+    [telemetry.alerts],
+  );
+  const occupancyHotspots = useMemo(
+    () => getOccupancyHotspots(telemetry.occupancy, 6),
+    [telemetry.occupancy],
+  );
+  const focusedSection = searchParams.get("section");
+  const highlightedOccupancy = focusedSection === "occupancy";
+  const igorWatchlist = useMemo(
+    () =>
+      [...telemetry.igorAssessments]
+        .sort((left, right) => right.generated_at_ms - left.generated_at_ms)
+        .slice(0, 4),
+    [telemetry.igorAssessments],
+  );
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4">
+      {operational.isPlaybackActive ? (
+        <StateBanner
+          tone="info"
+          title="Recorded playback is driving the cockpit"
+          message="Investigation mode is active. Use the threats workspace for session review or return to Capture Ops to stop playback."
+          action={{ href: "/threats?source=recorded", label: "Open investigations" }}
+        />
+      ) : null}
+
       <section className="grid gap-4 lg:grid-cols-4">
         <KpiCard
-          label="Latest sweep"
-          value={latestSweep ? `${latestSweep.sequence}` : "N/A"}
-          detail={formatTimestamp(latestSweep?.captured_at_ms ?? null)}
+          label="Operational mode"
+          value={formatCaptureMode(telemetry.status?.current_mode)}
+          detail={telemetry.health?.message ?? "Awaiting backend status"}
         />
         <KpiCard
-          label="Active peaks"
-          value={`${peaks.slice(-12).length}`}
-          detail="Rolling view of clustered detections"
+          label="Threat queue"
+          value={`${prioritizedAlerts.length}`}
+          detail="Prioritized by severity and recency"
         />
         <KpiCard
-          label="Top signal"
-          value={latestPeak ? formatPower(latestPeak.max_power) : "N/A"}
+          label="Top hotspot"
+          value={
+            occupancyHotspots[0]
+              ? `${occupancyHotspots[0].recent_activity_percentage.toFixed(1)}%`
+              : "N/A"
+          }
           detail={
-            latestPeak
-              ? formatFrequency(latestPeak.frequency)
-              : "Waiting for telemetry"
+            occupancyHotspots[0]
+              ? formatFrequency(occupancyHotspots[0].frequency_hz)
+              : "Occupancy context unavailable"
           }
         />
         <KpiCard
-          label="Capture health"
-          value={telemetry.health?.state ?? "unknown"}
-          detail={telemetry.health?.message ?? "Backend not connected"}
+          label="Last update"
+          value={formatRelativeAge(telemetry.lastMessageAt)}
+          detail={latestSweep ? `Sweep ${latestSweep.sequence}` : "No sweep frames yet"}
         />
       </section>
 
-      <div className="grid gap-6 xl:grid-cols-[1.6fr_0.9fr]">
-        <Panel title="FFT Spectrum" eyebrow="Live telemetry">
+      <div className="grid gap-4 xl:grid-cols-[minmax(0,1.7fr)_minmax(360px,0.95fr)]">
+        <div className="space-y-4">
+          <Panel title="Operational Spectrum" eyebrow="Live triage">
+            <div className="mb-4 flex flex-wrap items-center gap-3 border-b border-[var(--color-border-secondary)] pb-4 text-xs text-[var(--color-text-secondary)]">
+              <span>Window {formatFrequencyRange(latestSweep?.frequency_start_hz ?? null, latestSweep?.frequency_end_hz ?? null)}</span>
+              <span>Peak bands {peaks.slice(-12).length}</span>
+              <span>Top signal {latestPeak ? formatPower(latestPeak.max_power) : "N/A"}</span>
+              <Link
+                href="/device"
+                className="ml-auto text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)] transition-colors"
+              >
+                Configure
+              </Link>
+            </div>
           {chartData.length > 0 ? (
             <div className="h-80">
               <ResponsiveContainer width="100%" height="100%">
@@ -83,11 +146,7 @@ export function LiveSpectrumPage() {
                     tickFormatter={(value) => `${value.toFixed(0)} dB`}
                   />
                   <Tooltip
-                    contentStyle={{
-                      background: "var(--color-surface-strong)",
-                      border: "1px solid var(--color-border-secondary)",
-                      borderRadius: 16,
-                    }}
+                    contentStyle={tooltipContentStyle}
                     formatter={(value) => [
                       `${Number(value ?? 0).toFixed(1)} dB`,
                       "Power",
@@ -108,62 +167,170 @@ export function LiveSpectrumPage() {
               </ResponsiveContainer>
             </div>
           ) : (
-            <EmptyState message="No sweep frames received yet. Start live capture or replay a recording." />
+            <EmptyState
+              title="No live spectrum yet"
+              message="Start live capture or replay a recording to populate the command center spectrum workspace."
+            />
           )}
-        </Panel>
+          </Panel>
 
-        <div className="space-y-6">
-          <Panel title="Active Peak Bands" eyebrow="Clustered detections">
-            <div className="space-y-3">
-              {peaks.length > 0 ? (
-                peaks
-                  .slice(-8)
-                  .reverse()
-                  .map((peak) => (
-                    <article
-                      key={`${peak.source_sequence}-${peak.start_bin_index}`}
-                      className="orbit-card p-4"
-                    >
-                      <div className="flex items-center justify-between gap-3">
-                        <div>
-                          <p className="font-mono text-sm text-[var(--color-text-primary)]">
-                            {formatFrequency(peak.frequency_start_hz)} to{" "}
-                            {formatFrequency(peak.frequency_end_hz)}
-                          </p>
-                          <p className="mt-1 text-sm text-[var(--color-text-secondary)]">
-                            Center {formatFrequency(peak.frequency)} / bandwidth{" "}
-                            {(peak.bandwidth_hz / 1_000_000).toFixed(1)} MHz
-                          </p>
-                        </div>
-                        <p className="font-mono text-lg text-[var(--color-accent)]">
-                          {formatPower(peak.max_power)}
+          <Panel title="Waterfall History" eyebrow="Recent sweeps">
+            {sweeps.length > 0 ? (
+              <WaterfallCanvas sweeps={sweeps} />
+            ) : (
+              <EmptyState
+                title="Waterfall history is empty"
+                message="The waterfall will begin rendering after the first sweep frame is observed."
+              />
+            )}
+          </Panel>
+        </div>
+
+        <div className="space-y-4">
+          <Panel title="Prioritized Alert Queue" eyebrow="Critical first">
+            {prioritizedAlerts.length > 0 ? (
+              <div className="space-y-2">
+                {prioritizedAlerts.map((alert) => (
+                  <Link
+                    key={alert.id}
+                    href={`/threats?severity=${alert.severity}&incident=${alert.id}`}
+                    className="block rounded-md border border-[var(--color-border-secondary)] px-4 py-2.5 transition hover:border-[var(--color-border-strong)] hover:bg-[var(--color-surface-hover)]"
+                  >
+                    <div className="flex items-start justify-between gap-4">
+                      <div>
+                        <p className="text-sm font-semibold text-[var(--color-text-primary)]">
+                          {alert.alert_type}
+                        </p>
+                        <p className="mt-1 text-sm leading-6 text-[var(--color-text-secondary)]">
+                          {alert.message}
                         </p>
                       </div>
-                    </article>
-                  ))
-              ) : (
-                <EmptyState message="Peaks will appear here once the detector sees power above threshold." />
-              )}
-            </div>
+                      <div className="text-right text-xs uppercase tracking-[0.18em] text-[var(--color-text-tertiary)]">
+                        <p>{alert.severity}</p>
+                        <p className="mt-2 font-mono normal-case text-[var(--color-text-secondary)]">
+                          {formatTimestamp(alert.detected_at_ms)}
+                        </p>
+                      </div>
+                    </div>
+                  </Link>
+                ))}
+              </div>
+            ) : (
+              <EmptyState
+                title="No prioritized alerts"
+                message="Structured alert entries will appear here as soon as the detection engine promotes suspicious activity."
+                compact
+              />
+            )}
+          </Panel>
+
+          <Panel title="IGOR Watchlist" eyebrow="Recent correlated findings">
+            {igorWatchlist.length > 0 ? (
+              <div className="space-y-3">
+                {igorWatchlist.map((assessment) => (
+                  <Link
+                    key={assessment.id}
+                    href={`/threats?kind=${assessment.finding_kind}&incident=${assessment.id}`}
+                    className="block rounded-md border border-[var(--color-border-secondary)] px-4 py-2.5 transition hover:border-[var(--color-border-strong)] hover:bg-[var(--color-surface-hover)]"
+                  >
+                    <div className="flex items-start justify-between gap-4">
+                      <div>
+                        <p className="text-sm font-semibold text-[var(--color-text-primary)]">
+                          {assessment.finding_kind}
+                        </p>
+                        <p className="mt-1 text-sm leading-6 text-[var(--color-text-secondary)]">
+                          {assessment.message}
+                        </p>
+                      </div>
+                      <div className="text-right text-xs uppercase tracking-[0.18em] text-[var(--color-text-tertiary)]">
+                        <p>{assessment.severity}</p>
+                        <p className="mt-2 font-mono normal-case text-[var(--color-text-secondary)]">
+                          {assessment.risk_score}
+                        </p>
+                      </div>
+                    </div>
+                  </Link>
+                ))}
+              </div>
+            ) : (
+              <EmptyState
+                title="No IGOR findings yet"
+                message="Correlated threat findings will appear here after IGOR assembles evidence across multiple telemetry events."
+                compact
+              />
+            )}
+          </Panel>
+
+          <Panel
+            title="Occupancy Context"
+            eyebrow="Most active bins"
+            className={highlightedOccupancy ? "ring-1 ring-[var(--color-accent)]" : undefined}
+          >
+            {occupancyHotspots.length > 0 ? (
+              <div className="space-y-3">
+                {occupancyHotspots.map((bin) => (
+                  <div key={bin.frequency_hz} className="space-y-2">
+                    <div className="flex items-center justify-between gap-3 text-sm">
+                      <span className="font-mono text-[var(--color-text-primary)]">
+                        {formatFrequency(bin.frequency_hz)}
+                      </span>
+                      <span className="text-[var(--color-text-secondary)]">
+                        recent {bin.recent_activity_percentage.toFixed(1)}%
+                      </span>
+                    </div>
+                    <div className="h-2 overflow-hidden rounded-full bg-[var(--color-surface-subtle)]">
+                      <div
+                        className="h-full rounded-full bg-[var(--color-accent)]"
+                        style={{ width: `${Math.min(bin.recent_activity_percentage, 100)}%` }}
+                      />
+                    </div>
+                    <p className="text-xs uppercase tracking-[0.18em] text-[var(--color-text-tertiary)]">
+                      baseline {bin.activity_percentage.toFixed(1)}% / {bin.average_power.toFixed(1)} dB
+                    </p>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <EmptyState
+                title="Occupancy data unavailable"
+                message="The command center will surface the hottest bins here once the occupancy tracker has live or replay telemetry."
+                compact
+              />
+            )}
+          </Panel>
+
+          <Panel title="Device Context" eyebrow="Current session">
+            <dl className="grid gap-3 sm:grid-cols-2">
+              <ContextFact label="Capture" value={telemetry.health?.state ?? "unknown"} />
+              <ContextFact
+                label="Recording"
+                value={telemetry.recordingStatus?.active ? "active" : "idle"}
+              />
+              <ContextFact
+                label="Playback"
+                value={telemetry.playbackStatus?.active ? "active" : "idle"}
+              />
+              <ContextFact
+                label="Last sweep"
+                value={formatTimestamp(telemetry.status?.last_sweep_at_ms ?? null)}
+              />
+            </dl>
           </Panel>
         </div>
       </div>
-
-      <Panel title="Waterfall" eyebrow="Recent sweeps">
-        {sweeps.length > 0 ? (
-          <WaterfallCanvas sweeps={sweeps} />
-        ) : (
-          <EmptyState message="Waterfall history is empty until sweeps begin streaming." />
-        )}
-      </Panel>
     </div>
   );
 }
 
-function EmptyState({ message }: { message: string }) {
+function ContextFact({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-2xl border border-dashed border-[var(--color-border-secondary)] bg-[var(--color-surface)] p-8 text-sm text-[var(--color-text-secondary)]">
-      {message}
+    <div className="rounded-md border border-[var(--color-border-secondary)] bg-[var(--color-surface-subtle)] px-4 py-2.5">
+      <dt className="text-[0.62rem] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
+        {label}
+      </dt>
+      <dd className="mt-1 font-mono text-sm text-[var(--color-text-primary)]">
+        {value}
+      </dd>
     </div>
   );
 }

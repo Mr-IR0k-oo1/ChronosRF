@@ -74,6 +74,7 @@ pub fn extract_features(input: &Path, output: &Path, label: Option<String>) -> R
             | TelemetryEvent::Sweep(_)
             | TelemetryEvent::Anomaly(_)
             | TelemetryEvent::Alert(_)
+            | TelemetryEvent::IgorAssessment(_)
             | TelemetryEvent::RecordingStatus(_)
             | TelemetryEvent::PlaybackStatus(_) => {}
         }

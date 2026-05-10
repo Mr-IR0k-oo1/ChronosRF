@@ -24,6 +24,68 @@ export function formatTimestamp(timestampMs: number | null) {
   return new Date(timestampMs).toLocaleTimeString();
 }
 
+export function formatRelativeAge(timestampMs: number | null, now = Date.now()) {
+  if (!timestampMs) {
+    return "N/A";
+  }
+
+  const elapsedSeconds = Math.max(0, Math.floor((now - timestampMs) / 1000));
+  if (elapsedSeconds < 60) {
+    return `${elapsedSeconds}s ago`;
+  }
+
+  const elapsedMinutes = Math.floor(elapsedSeconds / 60);
+  if (elapsedMinutes < 60) {
+    return `${elapsedMinutes}m ago`;
+  }
+
+  const elapsedHours = Math.floor(elapsedMinutes / 60);
+  return `${elapsedHours}h ago`;
+}
+
+export function formatFrequencyRange(
+  startHz: number | null,
+  endHz: number | null,
+) {
+  if (startHz === null && endHz === null) {
+    return "N/A";
+  }
+  if (startHz === null || endHz === null || startHz === endHz) {
+    return formatFrequency(startHz ?? endHz);
+  }
+  return `${formatFrequency(startHz)} to ${formatFrequency(endHz)}`;
+}
+
+export function formatCaptureMode(mode: string | null | undefined) {
+  switch (mode) {
+    case "live":
+      return "Live";
+    case "playback":
+      return "Playback";
+    case "idle":
+      return "Idle";
+    default:
+      return "Unknown";
+  }
+}
+
+export function formatConnectionState(state: string | null | undefined) {
+  switch (state) {
+    case "open":
+      return "Connected";
+    case "connecting":
+      return "Connecting";
+    case "closed":
+      return "Closed";
+    case "error":
+      return "Error";
+    case "idle":
+      return "Idle";
+    default:
+      return "Unknown";
+  }
+}
+
 export function formatDuration(startedAtMs: number | null) {
   if (!startedAtMs) {
     return "N/A";

@@ -12,8 +12,7 @@ use crate::config::Config;
 use crate::core::logger;
 use crate::detection::{DetectionEngine, DetectionOutput};
 use crate::models::{
-    CaptureMode, HealthStatus, PlaybackStatus, RecordingStatus, StatusMetrics, SystemStatus,
-    TelemetryEvent,
+    CaptureMode, HealthStatus, PlaybackStatus, RecordingStatus, StatusMetrics, SystemStatus, TelemetryEvent,
 };
 use crate::recording::playback::PlaybackSession;
 use crate::recording::recorder::Recorder;
@@ -216,6 +215,7 @@ impl DeviceManager {
                                     &mut playback_session,
                                     &mut current_mode,
                                     &mut playback_status,
+                                    &recording_status,
                                     &metrics,
                                     last_sweep_sequence,
                                     last_sweep_at_ms,
@@ -285,6 +285,7 @@ impl DeviceManager {
                                 &mut playback_session,
                                 &mut current_mode,
                                 &mut playback_status,
+                                &recording_status,
                                 &metrics,
                                 last_sweep_sequence,
                                 last_sweep_at_ms,
@@ -297,6 +298,7 @@ impl DeviceManager {
                                 &mut playback_session,
                                 &mut current_mode,
                                 &mut playback_status,
+                                &recording_status,
                                 &metrics,
                                 last_sweep_sequence,
                                 last_sweep_at_ms,
@@ -337,18 +339,21 @@ impl DeviceManager {
                     metrics.peaks_per_second = (metrics.peak_count - last_log_counts.peak_count) as f32 / elapsed;
                     metrics.anomalies_per_second = (metrics.anomaly_count - last_log_counts.anomaly_count) as f32 / elapsed;
                     metrics.alerts_per_second = (metrics.alert_count - last_log_counts.alert_count) as f32 / elapsed;
+                    metrics.igor_per_second = (metrics.igor_count - last_log_counts.igor_count) as f32 / elapsed;
                     last_log_counts = metrics.clone();
                     last_log_instant = Instant::now();
                     logger::info(&format!(
-                        "Processing rates: sweeps {:.2}/s, peaks {:.2}/s, anomalies {:.2}/s, alerts {:.2}/s. Totals: sweeps {}, peaks {}, anomalies {}, alerts {}, reconnects {}.",
+                        "Processing rates: sweeps {:.2}/s, peaks {:.2}/s, anomalies {:.2}/s, alerts {:.2}/s, igor {:.2}/s. Totals: sweeps {}, peaks {}, anomalies {}, alerts {}, igor {}, reconnects {}.",
                         metrics.sweeps_per_second,
                         metrics.peaks_per_second,
                         metrics.anomalies_per_second,
                         metrics.alerts_per_second,
+                        metrics.igor_per_second,
                         metrics.sweep_count,
                         metrics.peak_count,
                         metrics.anomaly_count,
                         metrics.alert_count,
+                        metrics.igor_count,
                         metrics.reconnect_attempts
                     ));
                 }
@@ -452,6 +457,10 @@ impl DeviceManager {
             self.publish_event(recorder, TelemetryEvent::Alert(alert), metrics)
                 .await?;
         }
+        for assessment in output.igor_assessments {
+            self.publish_event(recorder, TelemetryEvent::IgorAssessment(assessment), metrics)
+                .await?;
+        }
         Ok(())
     }
 
@@ -466,6 +475,7 @@ impl DeviceManager {
             TelemetryEvent::Peak(_) => metrics.peak_count += 1,
             TelemetryEvent::Anomaly(_) => metrics.anomaly_count += 1,
             TelemetryEvent::Alert(_) => metrics.alert_count += 1,
+            TelemetryEvent::IgorAssessment(_) => metrics.igor_count += 1,
             TelemetryEvent::Health(_)
             | TelemetryEvent::Status(_)
             | TelemetryEvent::Occupancy(_)
@@ -504,6 +514,8 @@ impl DeviceManager {
                 peak_threshold_db: self.config.peak_threshold_db,
                 occupancy_window_seconds: self.config.occupancy_window_seconds,
                 occupancy_recent_window_seconds: self.config.occupancy_recent_window_seconds,
+                igor_correlation_window_seconds: self.config.igor_correlation_window.as_secs(),
+                igor_score_threshold: self.config.igor_score_threshold,
             },
             current_recording: recording_status.clone(),
             current_playback: playback_status.clone(),
@@ -619,6 +631,7 @@ impl DeviceManager {
         playback_session: &mut Option<PlaybackSession>,
         current_mode: &mut CaptureMode,
         playback_status: &mut PlaybackStatus,
+        recording_status: &RecordingStatus,
         metrics: &StatusMetrics,
         last_sweep_sequence: Option<u64>,
         last_sweep_at_ms: Option<u64>,
@@ -642,7 +655,7 @@ impl DeviceManager {
         self.publish_status(
             *current_mode,
             metrics,
-            &RecordingStatus::default(),
+            recording_status,
             playback_status,
             last_sweep_sequence,
             last_sweep_at_ms,
@@ -661,19 +674,40 @@ mod tests {
     use std::sync::Arc;
     use std::time::Duration;
 
+    use anyhow::Result;
     use tempfile::TempDir;
     use tokio::sync::{broadcast, mpsc};
+    use tokio::task::JoinHandle;
+    use tokio::time::timeout;
 
     use super::DeviceManager;
     use crate::config::{Config, FrequencyRange};
-    use crate::models::{HealthState, StatusMetrics};
+    use crate::models::{
+        CaptureMode, HealthState, HealthStatus, OccupancySnapshot, RecordedTelemetry,
+        StatusMetrics, TelemetryEvent,
+    };
+    use crate::recording::recorder::Recorder;
     use crate::sdr::sweep_capture::CaptureSession;
     use crate::state::ServiceState;
 
     fn test_config(hackrf_sweep_path: PathBuf) -> Arc<Config> {
+        build_test_config(
+            hackrf_sweep_path,
+            PathBuf::from("hackrf_info.exe"),
+            PathBuf::from("recordings"),
+            Duration::from_secs(1),
+        )
+    }
+
+    fn build_test_config(
+        hackrf_sweep_path: PathBuf,
+        hackrf_info_path: PathBuf,
+        recordings_dir: PathBuf,
+        restart_backoff: Duration,
+    ) -> Arc<Config> {
         Arc::new(Config {
             bind_addr: SocketAddr::from((Ipv4Addr::LOCALHOST, 9001)),
-            hackrf_info_path: "hackrf_info.exe".to_string(),
+            hackrf_info_path: hackrf_info_path.display().to_string(),
             hackrf_sweep_path: hackrf_sweep_path.display().to_string(),
             freq_range_mhz: FrequencyRange {
                 start_mhz: 2400,
@@ -684,7 +718,7 @@ mod tests {
             vga_gain_db: 20,
             amp_enable: false,
             antenna_enable: false,
-            restart_backoff: Duration::from_secs(1),
+            restart_backoff,
             peak_threshold_db: -35.0,
             occupancy_window_seconds: 300,
             occupancy_recent_window_seconds: 60,
@@ -696,8 +730,13 @@ mod tests {
             repeated_pulse_window: Duration::from_secs(10),
             repeated_pulse_min_count: 3,
             sustained_critical_period: Duration::from_secs(30),
-            recordings_dir: PathBuf::from("recordings"),
-            datasets_dir: PathBuf::from("datasets"),
+            igor_correlation_window: Duration::from_secs(30),
+            igor_min_peak_count: 3,
+            igor_persistence_window: Duration::from_secs(15),
+            igor_score_threshold: 60,
+            igor_buffer_size: 128,
+            recordings_dir: recordings_dir.clone(),
+            datasets_dir: recordings_dir.join("datasets"),
             default_playback_speed: 1.0,
             allowed_frontend_origin: "http://127.0.0.1:3000".to_string(),
             status_log_interval: Duration::from_secs(10),
@@ -710,6 +749,38 @@ mod tests {
         let state = ServiceState::new(config.clone(), telemetry_tx, control_tx, 1);
         let manager = DeviceManager::new(config, state.telemetry_hub(), control_rx, 1);
         (manager, state)
+    }
+
+    fn spawn_manager(
+        config: Arc<Config>,
+    ) -> (
+        JoinHandle<Result<()>>,
+        Arc<ServiceState>,
+        broadcast::Receiver<TelemetryEvent>,
+    ) {
+        let (manager, state) = build_manager(config);
+        let telemetry_rx = state.telemetry_tx.subscribe();
+        let handle = tokio::spawn(async move { manager.run().await });
+        (handle, state, telemetry_rx)
+    }
+
+    async fn recv_matching_event<F>(
+        telemetry_rx: &mut broadcast::Receiver<TelemetryEvent>,
+        predicate: F,
+    ) -> TelemetryEvent
+    where
+        F: Fn(&TelemetryEvent) -> bool,
+    {
+        timeout(Duration::from_secs(5), async {
+            loop {
+                let event = telemetry_rx.recv().await.expect("telemetry should stay open");
+                if predicate(&event) {
+                    return event;
+                }
+            }
+        })
+        .await
+        .expect("expected telemetry event should arrive in time")
     }
 
     #[tokio::test]
@@ -728,6 +799,58 @@ mod tests {
 
         assert!(error_chain.contains("failed to launch sweep capture process"));
         assert!(error_chain.contains(&missing_path.display().to_string()));
+    }
+
+    #[tokio::test]
+    async fn validate_hardware_reports_spawn_failures_with_path() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let missing_path = temp_dir.path().join("missing-info-script.exe");
+        let config = build_test_config(
+            temp_dir.path().join("unused-sweep-script.cmd"),
+            missing_path.clone(),
+            temp_dir.path().join("recordings"),
+            Duration::from_secs(1),
+        );
+        let (manager, _state) = build_manager(config);
+
+        let error = manager
+            .validate_hardware()
+            .await
+            .err()
+            .expect("missing info path should fail");
+        let error_chain = format!("{error:#}");
+
+        assert!(error_chain.contains("failed to launch"));
+        assert!(error_chain.contains(&missing_path.display().to_string()));
+    }
+
+    #[tokio::test]
+    async fn validate_hardware_returns_stdout_and_stderr_for_non_success_results() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let info_script = write_script(
+            temp_dir.path(),
+            "hackrf-info-failure",
+            &["No HackRF boards found."],
+            &["usb transport unavailable"],
+            0,
+            1,
+        );
+        let config = build_test_config(
+            temp_dir.path().join("unused-sweep-script.cmd"),
+            info_script,
+            temp_dir.path().join("recordings"),
+            Duration::from_secs(1),
+        );
+        let (manager, _state) = build_manager(config);
+
+        let result = manager
+            .validate_hardware()
+            .await
+            .expect("scripted hardware validation should run");
+
+        assert!(!result.success);
+        assert!(result.stdout.contains("No HackRF boards found."));
+        assert!(result.stderr.contains("usb transport unavailable"));
     }
 
     #[tokio::test]
@@ -773,6 +896,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn validate_sweep_reports_zero_telemetry_with_exit_diagnostics() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let script_path = write_script(
+            temp_dir.path(),
+            "empty-capture-failure",
+            &[],
+            &["hackrf_open() failed: HackRF not found (-5)"],
+            0,
+            1,
+        );
+        let config = test_config(script_path);
+        let (manager, _state) = build_manager(config);
+
+        let error = manager
+            .validate_sweep(1)
+            .await
+            .err()
+            .expect("empty capture should fail validation");
+        let error_message = format!("{error:#}");
+
+        assert!(error_message.contains("produced no telemetry lines"));
+        assert!(error_message.contains("Exit code: Some(1)"));
+        assert!(error_message.contains("HackRF not found"));
+    }
+
+    #[tokio::test]
     async fn handle_live_shutdown_publishes_restartable_degraded_state() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let script_path = write_capture_script(temp_dir.path(), "empty-capture", &[]);
@@ -792,40 +941,327 @@ mod tests {
         assert!(snapshots.health.message.contains("restarting"));
     }
 
+    #[tokio::test]
+    async fn run_publishes_online_health_when_live_capture_starts() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let script_path = write_script(
+            temp_dir.path(),
+            "steady-live-capture",
+            &[],
+            &[],
+            2,
+            0,
+        );
+        let config = build_test_config(
+            script_path,
+            PathBuf::from("hackrf_info.exe"),
+            temp_dir.path().join("recordings"),
+            Duration::from_millis(100),
+        );
+        let (handle, state, mut telemetry_rx) = spawn_manager(config);
+
+        let event = recv_matching_event(&mut telemetry_rx, |event| {
+            matches!(
+                event,
+                TelemetryEvent::Health(HealthStatus {
+                    state: HealthState::Online,
+                    ..
+                })
+            )
+        })
+        .await;
+
+        let snapshots = state.snapshots().await;
+        assert!(matches!(
+            event,
+            TelemetryEvent::Health(HealthStatus {
+                state: HealthState::Online,
+                ..
+            })
+        ));
+        assert_eq!(snapshots.health.state, HealthState::Online);
+
+        handle.abort();
+        let _ = handle.await;
+    }
+
+    #[tokio::test]
+    async fn run_updates_status_after_scripted_sweeps() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let script_path = write_script(
+            temp_dir.path(),
+            "live-capture-with-sweeps",
+            &[VALID_SWEEP_LINE, VALID_SWEEP_LINE],
+            &[],
+            2,
+            0,
+        );
+        let config = build_test_config(
+            script_path,
+            PathBuf::from("hackrf_info.exe"),
+            temp_dir.path().join("recordings"),
+            Duration::from_millis(100),
+        );
+        let (handle, state, mut telemetry_rx) = spawn_manager(config);
+
+        let _ = recv_matching_event(&mut telemetry_rx, |event| {
+            matches!(
+                event,
+                TelemetryEvent::Status(status)
+                    if status.last_sweep_sequence == Some(2)
+                        && status.metrics.sweep_count >= 2
+            )
+        })
+        .await;
+
+        let snapshots = state.snapshots().await;
+        assert_eq!(snapshots.status.last_sweep_sequence, Some(2));
+        assert!(snapshots.status.last_sweep_at_ms.is_some());
+        assert!(snapshots.status.metrics.sweep_count >= 2);
+
+        handle.abort();
+        let _ = handle.await;
+    }
+
+    #[tokio::test]
+    async fn run_publishes_degraded_health_after_live_capture_exit() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let script_path = write_capture_script(
+            temp_dir.path(),
+            "one-shot-live-capture",
+            &[VALID_SWEEP_LINE],
+        );
+        let config = build_test_config(
+            script_path,
+            PathBuf::from("hackrf_info.exe"),
+            temp_dir.path().join("recordings"),
+            Duration::from_millis(250),
+        );
+        let (handle, state, mut telemetry_rx) = spawn_manager(config);
+
+        let _ = recv_matching_event(&mut telemetry_rx, |event| {
+            matches!(
+                event,
+                TelemetryEvent::Health(HealthStatus {
+                    state: HealthState::Online,
+                    ..
+                })
+            )
+        })
+        .await;
+        let _ = recv_matching_event(&mut telemetry_rx, |event| {
+            matches!(
+                event,
+                TelemetryEvent::Health(HealthStatus {
+                    state: HealthState::Degraded,
+                    message,
+                    ..
+                }) if message.contains("restarting")
+            )
+        })
+        .await;
+
+        let snapshots = state.snapshots().await;
+        assert_eq!(snapshots.health.state, HealthState::Degraded);
+        assert!(snapshots.health.message.contains("restarting"));
+
+        handle.abort();
+        let _ = handle.await;
+    }
+
+    #[tokio::test]
+    async fn stop_playback_preserves_recording_status_in_system_status() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let recordings_dir = temp_dir.path().join("recordings");
+        fs::create_dir_all(&recordings_dir).expect("recordings directory should be created");
+
+        let config = build_test_config(
+            temp_dir.path().join("unused-capture-script.cmd"),
+            PathBuf::from("hackrf_info.exe"),
+            recordings_dir.clone(),
+            Duration::from_secs(1),
+        );
+        let (manager, state) = build_manager(config.clone());
+        let playback_file = write_playback_file(temp_dir.path());
+        let mut live_session = None;
+        let mut playback_session = None;
+        let mut recorder = Some(
+            Recorder::start(&config.recordings_dir, 42)
+                .await
+                .expect("recorder should start"),
+        );
+        let mut current_mode = CaptureMode::Live;
+        let mut playback_status = crate::models::PlaybackStatus::default();
+        let mut recording_status = recorder
+            .as_ref()
+            .expect("recorder should exist")
+            .status();
+        let metrics = StatusMetrics::default();
+
+        manager
+            .start_playback(
+                &mut live_session,
+                &mut playback_session,
+                &mut recorder,
+                &mut current_mode,
+                &mut playback_status,
+                &mut recording_status,
+                &metrics,
+                None,
+                None,
+                playback_file,
+                Some(1.0),
+            )
+            .await
+            .expect("playback should start");
+
+        manager
+            .stop_playback(
+                &mut playback_session,
+                &mut current_mode,
+                &mut playback_status,
+                &recording_status,
+                &metrics,
+                None,
+                None,
+            )
+            .await
+            .expect("playback should stop");
+
+        let snapshots = state.snapshots().await;
+        assert_eq!(snapshots.recording_status, recording_status);
+        assert_eq!(snapshots.status.current_recording, recording_status);
+        assert_eq!(snapshots.status.current_mode, CaptureMode::Live);
+    }
+
+    #[tokio::test]
+    async fn publish_event_tracks_igor_metrics_and_snapshot() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let config = build_test_config(
+            temp_dir.path().join("unused-capture-script.cmd"),
+            PathBuf::from("hackrf_info.exe"),
+            temp_dir.path().join("recordings"),
+            Duration::from_secs(1),
+        );
+        let (manager, state) = build_manager(config);
+        let mut metrics = StatusMetrics::default();
+        let mut recorder = None;
+
+        manager
+            .publish_event(
+                &mut recorder,
+                TelemetryEvent::IgorAssessment(crate::models::IgorAssessment {
+                    id: "igor-1".to_string(),
+                    generated_at_ms: 1,
+                    source_sequence: 1,
+                    finding_kind: crate::models::IgorFindingKind::CoordinatedEmitter,
+                    severity: crate::models::AlertSeverity::Critical,
+                    risk_score: 90,
+                    frequency_start_hz: 10,
+                    frequency_end_hz: 20,
+                    evidence_count: 5,
+                    distinct_anomaly_types: vec![
+                        crate::models::AnomalyType::RepeatedPulses,
+                        crate::models::AnomalyType::PowerSpike,
+                    ],
+                    max_power: -10.0,
+                    message: "igor".to_string(),
+                }),
+                &mut metrics,
+            )
+            .await
+            .expect("igor assessment should publish");
+
+        let snapshots = state.snapshots().await;
+        assert_eq!(metrics.igor_count, 1);
+        assert_eq!(snapshots.igor_assessments.len(), 1);
+    }
+
     const VALID_SWEEP_LINE: &str =
         "2019-01-03, 11:57:34.967805, 2400000000, 2405000000, 1000000.00, 20, -64.72, -63.36, -60.91";
 
+    fn write_playback_file(directory: &Path) -> PathBuf {
+        let path = directory.join("playback.jsonl");
+        let recorded_event = RecordedTelemetry {
+            session_id: "session-1".to_string(),
+            event_type: "occupancy".to_string(),
+            recorded_at_ms: 1,
+            event: TelemetryEvent::Occupancy(OccupancySnapshot::default()),
+        };
+        let payload = serde_json::to_string(&recorded_event).expect("playback event should serialize");
+        fs::write(&path, format!("{payload}\n")).expect("playback file should be written");
+        path
+    }
+
+    fn write_script(
+        directory: &Path,
+        name: &str,
+        stdout_lines: &[&str],
+        stderr_lines: &[&str],
+        sleep_seconds: u64,
+        exit_code: i32,
+    ) -> PathBuf {
+        #[cfg(windows)]
+        {
+            let path = directory.join(format!("{name}.cmd"));
+            let mut script = String::from("@echo off\r\n");
+            for line in stdout_lines {
+                script.push_str("echo ");
+                script.push_str(line);
+                script.push_str("\r\n");
+            }
+            for line in stderr_lines {
+                script.push_str("echo ");
+                script.push_str(line);
+                script.push_str(" 1>&2\r\n");
+            }
+            if sleep_seconds > 0 {
+                script.push_str(&format!(
+                    "powershell -NoProfile -Command \"Start-Sleep -Seconds {sleep_seconds}\"\r\n"
+                ));
+            }
+            script.push_str(&format!("exit /b {exit_code}\r\n"));
+            fs::write(&path, script).expect("test script should be written");
+            path
+        }
+
+        #[cfg(not(windows))]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            let path = directory.join(name);
+            let mut script = String::from("#!/bin/sh\n");
+            for line in stdout_lines {
+                script.push_str("printf '%s\\n' '");
+                script.push_str(line);
+                script.push_str("'\n");
+            }
+            for line in stderr_lines {
+                script.push_str("printf '%s\\n' '");
+                script.push_str(line);
+                script.push_str("' >&2\n");
+            }
+            if sleep_seconds > 0 {
+                script.push_str(&format!("sleep {sleep_seconds}\n"));
+            }
+            script.push_str(&format!("exit {exit_code}\n"));
+            fs::write(&path, script).expect("test script should be written");
+            let mut permissions = fs::metadata(&path)
+                .expect("metadata should exist")
+                .permissions();
+            permissions.set_mode(0o755);
+            fs::set_permissions(&path, permissions).expect("permissions should be updated");
+            path
+        }
+    }
+
     #[cfg(windows)]
     fn write_capture_script(directory: &Path, name: &str, lines: &[&str]) -> PathBuf {
-        let path = directory.join(format!("{name}.cmd"));
-        let mut script = String::from("@echo off\r\n");
-        for line in lines {
-            script.push_str("echo ");
-            script.push_str(line);
-            script.push_str("\r\n");
-        }
-        script.push_str("exit /b 0\r\n");
-        fs::write(&path, script).expect("capture script should be written");
-        path
+        write_script(directory, name, lines, &[], 0, 0)
     }
 
     #[cfg(not(windows))]
     fn write_capture_script(directory: &Path, name: &str, lines: &[&str]) -> PathBuf {
-        use std::os::unix::fs::PermissionsExt;
-
-        let path = directory.join(name);
-        let mut script = String::from("#!/bin/sh\n");
-        for line in lines {
-            script.push_str("printf '%s\\n' '");
-            script.push_str(line);
-            script.push_str("'\n");
-        }
-        fs::write(&path, script).expect("capture script should be written");
-        let mut permissions = fs::metadata(&path)
-            .expect("metadata should exist")
-            .permissions();
-        permissions.set_mode(0o755);
-        fs::set_permissions(&path, permissions).expect("permissions should be updated");
-        path
+        write_script(directory, name, lines, &[], 0, 0)
     }
 }
