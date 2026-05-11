@@ -81,9 +81,9 @@ impl AnomalyDetector {
             if !history.active {
                 history.active = true;
                 history.current_burst_start_ms = Some(now_ms);
-                history.quiet_before_start = history
-                    .last_active_end_ms
-                    .is_some_and(|last| now_ms.saturating_sub(last) >= self.burst_quiet_period.as_millis() as u64);
+                history.quiet_before_start = history.last_active_end_ms.is_some_and(|last| {
+                    now_ms.saturating_sub(last) >= self.burst_quiet_period.as_millis() as u64
+                });
                 history.pulse_starts.push_back(now_ms);
                 prune_old_pulses(history, now_ms, self.repeated_pulse_window);
 
@@ -287,8 +287,10 @@ mod tests {
         detector.detect(&sweep(4, 4_000), &[], &mut occupancy);
         let anomalies = detector.detect(&sweep(5, 5_000), &[peak(5, 5_000)], &mut occupancy);
 
-        assert!(anomalies
-            .iter()
-            .any(|anomaly| anomaly.anomaly_type == crate::models::AnomalyType::RepeatedPulses));
+        assert!(
+            anomalies
+                .iter()
+                .any(|anomaly| anomaly.anomaly_type == crate::models::AnomalyType::RepeatedPulses)
+        );
     }
 }

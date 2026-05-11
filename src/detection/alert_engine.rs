@@ -110,7 +110,10 @@ impl AlertEngine {
                 alert_type: anomaly_type_name(anomaly.anomaly_type).to_string(),
                 severity,
                 message: if sustained {
-                    format!("{} Condition has persisted for more than 30 seconds.", anomaly.message)
+                    format!(
+                        "{} Condition has persisted for more than 30 seconds.",
+                        anomaly.message
+                    )
                 } else {
                     anomaly.message.clone()
                 },
@@ -150,9 +153,7 @@ mod tests {
             anomaly_type,
             severity: match anomaly_type {
                 AnomalyType::BurstActivity | AnomalyType::PowerSpike => AlertSeverity::Medium,
-                AnomalyType::AbnormalOccupancy | AnomalyType::RepeatedPulses => {
-                    AlertSeverity::High
-                }
+                AnomalyType::AbnormalOccupancy | AnomalyType::RepeatedPulses => AlertSeverity::High,
             },
             frequency_start_hz: 2_400_000_000,
             frequency_end_hz: 2_401_000_000,

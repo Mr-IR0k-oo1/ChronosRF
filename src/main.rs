@@ -80,7 +80,11 @@ async fn main() -> Result<()> {
         Commands::ValidateSweep { duration_seconds } => {
             validate_sweep(config, started_at_ms, duration_seconds).await
         }
-        Commands::ExtractFeatures { input, output, label } => {
+        Commands::ExtractFeatures {
+            input,
+            output,
+            label,
+        } => {
             let rows = ml::extract_features(&input, &output, label)?;
             println!("Extracted {rows} feature rows to {}.", output.display());
             Ok(())

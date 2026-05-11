@@ -156,7 +156,9 @@ mod tests {
     use tokio::sync::{broadcast, mpsc};
 
     use crate::config::Config;
-    use crate::models::{AlertSeverity, AnomalyType, IgorAssessment, IgorFindingKind, TelemetryEvent};
+    use crate::models::{
+        AlertSeverity, AnomalyType, IgorAssessment, IgorFindingKind, TelemetryEvent,
+    };
 
     use super::ServiceState;
 

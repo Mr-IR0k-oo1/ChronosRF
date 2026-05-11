@@ -114,7 +114,9 @@ pub fn train_classifier(dataset: &Path, report: &Path) -> Result<TrainingReport>
     for record in reader.deserialize::<FeatureRow>() {
         let record = record?;
         let next_index = label_lookup.len() as u32;
-        let label_index = *label_lookup.entry(record.label.clone()).or_insert(next_index);
+        let label_index = *label_lookup
+            .entry(record.label.clone())
+            .or_insert(next_index);
         labels.push(label_index);
         rows.push(vec![
             record.duration_seconds,
@@ -132,7 +134,8 @@ pub fn train_classifier(dataset: &Path, report: &Path) -> Result<TrainingReport>
     }
 
     let matrix = DenseMatrix::from_2d_vec(&rows)?;
-    let (x_train, x_test, y_train, y_test) = train_test_split(&matrix, &labels, 0.2, true, Some(42));
+    let (x_train, x_test, y_train, y_test) =
+        train_test_split(&matrix, &labels, 0.2, true, Some(42));
     let model = RandomForestClassifier::fit(
         &x_train,
         &y_train,
@@ -193,7 +196,11 @@ fn build_feature_row(
 ) -> FeatureRow {
     let duration_seconds =
         (segment.end_ms.saturating_sub(segment.start_ms) as f64 / 1_000.0).max(0.5);
-    let average_power = segment.powers.iter().map(|power| *power as f64).sum::<f64>()
+    let average_power = segment
+        .powers
+        .iter()
+        .map(|power| *power as f64)
+        .sum::<f64>()
         / segment.powers.len().max(1) as f64;
     let power_variance = segment
         .powers
@@ -205,7 +212,13 @@ fn build_feature_row(
         .sum::<f64>()
         / segment.powers.len().max(1) as f64;
     let occupancy_percentage = latest_occupancy
-        .map(|snapshot| average_occupancy(snapshot, segment.frequency_start_hz, segment.frequency_end_hz))
+        .map(|snapshot| {
+            average_occupancy(
+                snapshot,
+                segment.frequency_start_hz,
+                segment.frequency_end_hz,
+            )
+        })
         .unwrap_or(0.0);
     let burst_frequency = segment.event_count as f64 / duration_seconds.max(1.0);
 

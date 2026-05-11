@@ -150,7 +150,10 @@ mod tests {
         assert!(!report.igor_assessments.is_empty());
     }
 
-    fn write_capture_script(directory: &Path, plan: &crate::attack_simulator::SimulatorPlan) -> PathBuf {
+    fn write_capture_script(
+        directory: &Path,
+        plan: &crate::attack_simulator::SimulatorPlan,
+    ) -> PathBuf {
         #[cfg(windows)]
         {
             let path = directory.join("attack-sim.cmd");

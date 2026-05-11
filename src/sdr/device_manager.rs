@@ -12,7 +12,8 @@ use crate::config::Config;
 use crate::core::logger;
 use crate::detection::{DetectionEngine, DetectionOutput};
 use crate::models::{
-    CaptureMode, HealthStatus, PlaybackStatus, RecordingStatus, StatusMetrics, SystemStatus, TelemetryEvent,
+    CaptureMode, HealthStatus, PlaybackStatus, RecordingStatus, StatusMetrics, SystemStatus,
+    TelemetryEvent,
 };
 use crate::recording::playback::PlaybackSession;
 use crate::recording::recorder::Recorder;
@@ -418,10 +419,7 @@ impl DeviceManager {
             };
 
             if !exit_status.success {
-                message.push_str(&format!(
-                    " Exit code: {:?}.",
-                    exit_status.exit_code
-                ));
+                message.push_str(&format!(" Exit code: {:?}.", exit_status.exit_code));
             }
 
             if let Some(stderr_summary) = exit_status.stderr_summary() {
@@ -458,8 +456,12 @@ impl DeviceManager {
                 .await?;
         }
         for assessment in output.igor_assessments {
-            self.publish_event(recorder, TelemetryEvent::IgorAssessment(assessment), metrics)
-                .await?;
+            self.publish_event(
+                recorder,
+                TelemetryEvent::IgorAssessment(assessment),
+                metrics,
+            )
+            .await?;
         }
         Ok(())
     }
@@ -521,7 +523,9 @@ impl DeviceManager {
             current_playback: playback_status.clone(),
         };
 
-        self.telemetry_hub.publish(TelemetryEvent::Status(status)).await;
+        self.telemetry_hub
+            .publish(TelemetryEvent::Status(status))
+            .await;
     }
 
     async fn handle_live_shutdown(
@@ -773,7 +777,10 @@ mod tests {
     {
         timeout(Duration::from_secs(5), async {
             loop {
-                let event = telemetry_rx.recv().await.expect("telemetry should stay open");
+                let event = telemetry_rx
+                    .recv()
+                    .await
+                    .expect("telemetry should stay open");
                 if predicate(&event) {
                     return event;
                 }
@@ -944,14 +951,7 @@ mod tests {
     #[tokio::test]
     async fn run_publishes_online_health_when_live_capture_starts() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
-        let script_path = write_script(
-            temp_dir.path(),
-            "steady-live-capture",
-            &[],
-            &[],
-            2,
-            0,
-        );
+        let script_path = write_script(temp_dir.path(), "steady-live-capture", &[], &[], 2, 0);
         let config = build_test_config(
             script_path,
             PathBuf::from("hackrf_info.exe"),
@@ -1092,10 +1092,7 @@ mod tests {
         );
         let mut current_mode = CaptureMode::Live;
         let mut playback_status = crate::models::PlaybackStatus::default();
-        let mut recording_status = recorder
-            .as_ref()
-            .expect("recorder should exist")
-            .status();
+        let mut recording_status = recorder.as_ref().expect("recorder should exist").status();
         let metrics = StatusMetrics::default();
 
         manager
@@ -1177,8 +1174,7 @@ mod tests {
         assert_eq!(snapshots.igor_assessments.len(), 1);
     }
 
-    const VALID_SWEEP_LINE: &str =
-        "2019-01-03, 11:57:34.967805, 2400000000, 2405000000, 1000000.00, 20, -64.72, -63.36, -60.91";
+    const VALID_SWEEP_LINE: &str = "2019-01-03, 11:57:34.967805, 2400000000, 2405000000, 1000000.00, 20, -64.72, -63.36, -60.91";
 
     fn write_playback_file(directory: &Path) -> PathBuf {
         let path = directory.join("playback.jsonl");
@@ -1188,7 +1184,8 @@ mod tests {
             recorded_at_ms: 1,
             event: TelemetryEvent::Occupancy(OccupancySnapshot::default()),
         };
-        let payload = serde_json::to_string(&recorded_event).expect("playback event should serialize");
+        let payload =
+            serde_json::to_string(&recorded_event).expect("playback event should serialize");
         fs::write(&path, format!("{payload}\n")).expect("playback file should be written");
         path
     }

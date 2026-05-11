@@ -4,7 +4,8 @@ use std::time::Duration;
 use uuid::Uuid;
 
 use crate::models::{
-    AlertSeverity, AnomalyEvent, AnomalyType, IgorAssessment, IgorFindingKind, SignalPeak, SweepData,
+    AlertSeverity, AnomalyEvent, AnomalyType, IgorAssessment, IgorFindingKind, SignalPeak,
+    SweepData,
 };
 
 #[derive(Clone, Debug)]
@@ -130,7 +131,8 @@ impl IgorEngine {
             }
 
             let distinct_types = distinct_anomaly_types(context);
-            let evidence_count = context.recent_peaks.len() as u64 + context.recent_anomalies.len() as u64;
+            let evidence_count =
+                context.recent_peaks.len() as u64 + context.recent_anomalies.len() as u64;
             let max_power = max_power(context);
             let span_ms = span_ms(context).unwrap_or_default();
             let source_sequence = context
@@ -235,7 +237,11 @@ fn score_band(context: &BandContext, min_peak_count: usize, persistence_window_m
         .unwrap_or_default();
     let type_score = (anomaly_types.len() as u32 * 12).min(36);
     let anomaly_score = (anomaly_count * 8).min(24);
-    let peak_score = if peak_count >= min_peak_count as u32 { 10 } else { 0 };
+    let peak_score = if peak_count >= min_peak_count as u32 {
+        10
+    } else {
+        0
+    };
     let persistence_score = if span_ms(context).is_some_and(|span| span >= persistence_window_ms) {
         15
     } else {
@@ -387,7 +393,9 @@ mod tests {
     use std::time::Duration;
 
     use super::IgorEngine;
-    use crate::models::{AlertSeverity, AnomalyEvent, AnomalyType, IgorFindingKind, SignalPeak, SweepData};
+    use crate::models::{
+        AlertSeverity, AnomalyEvent, AnomalyType, IgorFindingKind, SignalPeak, SweepData,
+    };
 
     fn sweep(sequence: u64, captured_at_ms: u64) -> SweepData {
         SweepData {
@@ -446,14 +454,35 @@ mod tests {
             &sweep(3, 15_000),
             &[peak(1, 1_000), peak(2, 8_000), peak(3, 15_000)],
             &[
-                anomaly("1", AnomalyType::RepeatedPulses, AlertSeverity::High, 1, 1_000),
-                anomaly("2", AnomalyType::PowerSpike, AlertSeverity::Medium, 2, 8_000),
-                anomaly("3", AnomalyType::AbnormalOccupancy, AlertSeverity::High, 3, 15_000),
+                anomaly(
+                    "1",
+                    AnomalyType::RepeatedPulses,
+                    AlertSeverity::High,
+                    1,
+                    1_000,
+                ),
+                anomaly(
+                    "2",
+                    AnomalyType::PowerSpike,
+                    AlertSeverity::Medium,
+                    2,
+                    8_000,
+                ),
+                anomaly(
+                    "3",
+                    AnomalyType::AbnormalOccupancy,
+                    AlertSeverity::High,
+                    3,
+                    15_000,
+                ),
             ],
         );
 
         assert_eq!(assessments.len(), 1);
-        assert_eq!(assessments[0].finding_kind, IgorFindingKind::CoordinatedEmitter);
+        assert_eq!(
+            assessments[0].finding_kind,
+            IgorFindingKind::CoordinatedEmitter
+        );
         assert!(assessments[0].risk_score >= 60);
     }
 
@@ -485,6 +514,9 @@ mod tests {
         );
 
         assert_eq!(assessments.len(), 1);
-        assert_eq!(assessments[0].finding_kind, IgorFindingKind::PersistentEmitter);
+        assert_eq!(
+            assessments[0].finding_kind,
+            IgorFindingKind::PersistentEmitter
+        );
     }
 }

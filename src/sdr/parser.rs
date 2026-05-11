@@ -95,9 +95,11 @@ mod tests {
         let line = "2019-01-03, , 2405000000, 2410000000, 1000000.00, 20, -61.19";
         let error = parse_sweep_line(line, 1, 1).expect_err("row should be rejected");
 
-        assert!(error
-            .to_string()
-            .contains("contains an empty required field"));
+        assert!(
+            error
+                .to_string()
+                .contains("contains an empty required field")
+        );
     }
 
     #[test]
@@ -121,27 +123,31 @@ mod tests {
         let line = "2019-01-03, 11:57:34.967805, 2410000000, 2410000000, 1000000.00, 20, -61.19";
         let error = parse_sweep_line(line, 1, 1).expect_err("row should be rejected");
 
-        assert!(error
-            .to_string()
-            .contains("start frequency must be lower than end frequency"));
+        assert!(
+            error
+                .to_string()
+                .contains("start frequency must be lower than end frequency")
+        );
     }
 
     #[test]
     fn rejects_non_positive_or_non_finite_bin_width() {
-        let zero_width =
-            "2019-01-03, 11:57:34.967805, 2405000000, 2410000000, 0, 20, -61.19";
-        let nan_width =
-            "2019-01-03, 11:57:34.967805, 2405000000, 2410000000, NaN, 20, -61.19";
+        let zero_width = "2019-01-03, 11:57:34.967805, 2405000000, 2410000000, 0, 20, -61.19";
+        let nan_width = "2019-01-03, 11:57:34.967805, 2405000000, 2410000000, NaN, 20, -61.19";
 
         let zero_error = parse_sweep_line(zero_width, 1, 1).expect_err("row should be rejected");
         let nan_error = parse_sweep_line(nan_width, 1, 1).expect_err("row should be rejected");
 
-        assert!(zero_error
-            .to_string()
-            .contains("bin width must be positive and finite"));
-        assert!(nan_error
-            .to_string()
-            .contains("bin width must be positive and finite"));
+        assert!(
+            zero_error
+                .to_string()
+                .contains("bin width must be positive and finite")
+        );
+        assert!(
+            nan_error
+                .to_string()
+                .contains("bin width must be positive and finite")
+        );
     }
 
     #[test]

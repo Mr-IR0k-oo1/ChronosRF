@@ -267,6 +267,12 @@ pub struct RecordingFileSummary {
     pub file_path: String,
     pub size_bytes: u64,
     pub modified_at_ms: u64,
+    pub started_at_ms: Option<u64>,
+    pub ended_at_ms: Option<u64>,
+    pub event_count: Option<u64>,
+    pub alert_count: Option<u64>,
+    pub anomaly_count: Option<u64>,
+    pub igor_count: Option<u64>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]

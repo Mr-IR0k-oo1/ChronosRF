@@ -3,8 +3,8 @@ use std::path::PathBuf;
 
 use axum::Json;
 use axum::Router;
-use axum::extract::{Query, State};
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
+use axum::extract::{Query, State};
 use axum::http::{HeaderValue, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -14,7 +14,9 @@ use tower_http::cors::CorsLayer;
 
 use crate::core::errors::Result;
 use crate::core::logger;
-use crate::models::{IgorAssessment, PlaybackStatus, RecordingFileSummary, RecordingStatus, TelemetryEvent};
+use crate::models::{
+    IgorAssessment, PlaybackStatus, RecordingFileSummary, RecordingStatus, TelemetryEvent,
+};
 use crate::recording::recorder::list_recordings;
 use crate::state::{AppState, ControlCommand};
 
@@ -113,9 +115,7 @@ async fn get_occupancy(
     Json(snapshots.occupancy)
 }
 
-async fn get_recordings(
-    State(app_state): State<AppState>,
-) -> ApiResult<Vec<RecordingFileSummary>> {
+async fn get_recordings(State(app_state): State<AppState>) -> ApiResult<Vec<RecordingFileSummary>> {
     let recordings = list_recordings(&app_state.config.recordings_dir).map_err(internal_error)?;
     Ok(Json(recordings))
 }
@@ -179,10 +179,7 @@ async fn stop_playback(State(app_state): State<AppState>) -> ApiResult<PlaybackS
     response.map(Json).map_err(internal_error)
 }
 
-async fn ws_handler(
-    ws: WebSocketUpgrade,
-    State(app_state): State<AppState>,
-) -> impl IntoResponse {
+async fn ws_handler(ws: WebSocketUpgrade, State(app_state): State<AppState>) -> impl IntoResponse {
     ws.on_upgrade(move |socket| client_session(socket, app_state))
 }
 
@@ -282,6 +279,7 @@ fn service_unavailable(message: impl ToString) -> ApiError {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
     use std::net::{Ipv4Addr, SocketAddr};
     use std::time::Duration;
 
@@ -299,7 +297,8 @@ mod tests {
     use crate::config::Config;
     use crate::models::{
         AlertEvent, AlertSeverity, CaptureMode, HealthState, HealthStatus, IgorAssessment,
-        IgorFindingKind, OccupancySnapshot, PlaybackStatus, RecordingStatus, TelemetryEvent,
+        IgorFindingKind, OccupancySnapshot, PlaybackStatus, RecordedTelemetry,
+        RecordingFileSummary, RecordingStatus, TelemetryEvent,
     };
     use crate::state::{AppState, ServiceState};
 
@@ -326,7 +325,9 @@ mod tests {
         let listener = TcpListener::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
             .await
             .expect("listener should bind");
-        let addr = listener.local_addr().expect("listener should have an address");
+        let addr = listener
+            .local_addr()
+            .expect("listener should have an address");
         let server = tokio::spawn(async move {
             axum::serve(listener, build_router(app_state))
                 .await
@@ -339,7 +340,12 @@ mod tests {
     async fn health_endpoint_returns_snapshot() {
         let app_state = test_state().await;
         let response = build_router(app_state)
-            .oneshot(Request::builder().uri("/api/health").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri("/api/health")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .expect("request should succeed");
 
@@ -448,6 +454,76 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn recordings_endpoint_returns_enriched_recording_summaries() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        let recordings_dir = temp_dir.path().join("recordings");
+        let dated_dir = recordings_dir.join("20260511");
+        fs::create_dir_all(&dated_dir).expect("dated directory should be created");
+        let recording_path = dated_dir.join("session-1.jsonl");
+        let payload = [
+            RecordedTelemetry {
+                session_id: "session-1".to_string(),
+                event_type: "occupancy".to_string(),
+                recorded_at_ms: 100,
+                event: TelemetryEvent::Occupancy(OccupancySnapshot {
+                    generated_at_ms: 100,
+                    window_seconds: 60,
+                    bins: Vec::new(),
+                }),
+            },
+            RecordedTelemetry {
+                session_id: "session-1".to_string(),
+                event_type: "alert".to_string(),
+                recorded_at_ms: 150,
+                event: TelemetryEvent::Alert(AlertEvent {
+                    id: "alert-1".to_string(),
+                    alert_type: "burst_activity".to_string(),
+                    severity: AlertSeverity::High,
+                    message: "alert".to_string(),
+                    detected_at_ms: 150,
+                    source_sequence: Some(1),
+                    frequency_start_hz: Some(10),
+                    frequency_end_hz: Some(20),
+                    power: Some(-20.0),
+                }),
+            },
+        ]
+        .into_iter()
+        .map(|event| serde_json::to_string(&event).expect("recorded event should serialize"))
+        .collect::<Vec<_>>()
+        .join("\n");
+        fs::write(&recording_path, format!("{payload}\n"))
+            .expect("recording file should be written");
+
+        let mut config = Config::from_env().expect("config should load");
+        config.recordings_dir = recordings_dir;
+        let config = std::sync::Arc::new(config);
+        let (telemetry_tx, _) = tokio::sync::broadcast::channel(64);
+        let (control_tx, _control_rx) = tokio::sync::mpsc::channel(4);
+        let app_state = ServiceState::new(config, telemetry_tx, control_tx, 123);
+
+        let response = build_router(app_state)
+            .oneshot(
+                Request::builder()
+                    .uri("/api/recordings")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .expect("request should succeed");
+        let summaries: Vec<RecordingFileSummary> = read_json(response).await;
+
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].session_id, "session-1");
+        assert_eq!(summaries[0].started_at_ms, Some(100));
+        assert_eq!(summaries[0].ended_at_ms, Some(150));
+        assert_eq!(summaries[0].event_count, Some(2));
+        assert_eq!(summaries[0].alert_count, Some(1));
+        assert_eq!(summaries[0].anomaly_count, Some(0));
+        assert_eq!(summaries[0].igor_count, Some(0));
+    }
+
+    #[tokio::test]
     async fn status_and_health_endpoints_stay_consistent_across_live_degraded_and_playback() {
         let app_state = test_state().await;
         let hub = app_state.telemetry_hub();
@@ -475,7 +551,8 @@ mod tests {
             .await;
         hub.publish(TelemetryEvent::PlaybackStatus(idle_playback.clone()))
             .await;
-        hub.publish(TelemetryEvent::Status(live_status.clone())).await;
+        hub.publish(TelemetryEvent::Status(live_status.clone()))
+            .await;
 
         let live_health_response = build_router(app_state.clone())
             .oneshot(
@@ -496,7 +573,8 @@ mod tests {
             .await
             .expect("live status request should succeed");
         let live_health: HealthStatus = read_json(live_health_response).await;
-        let live_status_snapshot: crate::models::SystemStatus = read_json(live_status_response).await;
+        let live_status_snapshot: crate::models::SystemStatus =
+            read_json(live_status_response).await;
 
         assert_eq!(live_health.state, HealthState::Online);
         assert_eq!(live_status_snapshot.current_mode, CaptureMode::Live);
@@ -594,7 +672,10 @@ mod tests {
         assert!(degraded_health.message.contains("restarting"));
         assert_eq!(degraded_status_snapshot.current_mode, CaptureMode::Live);
         assert!(!degraded_status_snapshot.current_playback.active);
-        assert_eq!(degraded_status_snapshot.current_recording.session_id, Some("rec-1".to_string()));
+        assert_eq!(
+            degraded_status_snapshot.current_recording.session_id,
+            Some("rec-1".to_string())
+        );
     }
 
     #[tokio::test]
@@ -631,7 +712,8 @@ mod tests {
             .await;
         hub.publish(TelemetryEvent::PlaybackStatus(playback_status.clone()))
             .await;
-        hub.publish(TelemetryEvent::Occupancy(occupancy.clone())).await;
+        hub.publish(TelemetryEvent::Occupancy(occupancy.clone()))
+            .await;
         hub.publish(TelemetryEvent::Alert(AlertEvent {
             id: "a-1".to_string(),
             alert_type: "burst_activity".to_string(),

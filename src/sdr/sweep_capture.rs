@@ -209,7 +209,10 @@ mod tests {
             .map(|arg| arg.to_string_lossy().to_string())
             .collect::<Vec<_>>();
 
-        assert_eq!(command.as_std().get_program(), OsStr::new("hackrf_sweep.exe"));
+        assert_eq!(
+            command.as_std().get_program(),
+            OsStr::new("hackrf_sweep.exe")
+        );
         assert_eq!(
             args,
             vec![

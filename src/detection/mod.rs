@@ -5,7 +5,9 @@ pub mod peak_detector;
 
 use crate::config::Config;
 use crate::igor::IgorEngine;
-use crate::models::{AlertEvent, AnomalyEvent, IgorAssessment, OccupancySnapshot, SignalPeak, SweepData};
+use crate::models::{
+    AlertEvent, AnomalyEvent, IgorAssessment, OccupancySnapshot, SignalPeak, SweepData,
+};
 
 use self::alert_engine::AlertEngine;
 use self::anomaly_detector::AnomalyDetector;
@@ -121,22 +123,28 @@ mod tests {
         assert!(first.igor_assessments.is_empty());
 
         let second = engine.process_sweep(&sweep(2, 2_000, vec![-80.0, -80.0]));
-        assert!(second
-            .anomalies
-            .iter()
-            .all(|anomaly| anomaly.anomaly_type != AnomalyType::BurstActivity));
+        assert!(
+            second
+                .anomalies
+                .iter()
+                .all(|anomaly| anomaly.anomaly_type != AnomalyType::BurstActivity)
+        );
 
         let third = engine.process_sweep(&sweep(3, 4_000, vec![-20.0, -80.0]));
-        assert!(third
-            .anomalies
-            .iter()
-            .any(|anomaly| anomaly.anomaly_type == AnomalyType::RepeatedPulses));
+        assert!(
+            third
+                .anomalies
+                .iter()
+                .any(|anomaly| anomaly.anomaly_type == AnomalyType::RepeatedPulses)
+        );
 
         let fourth = engine.process_sweep(&sweep(4, 5_000, vec![-80.0, -80.0]));
-        assert!(fourth
-            .anomalies
-            .iter()
-            .any(|anomaly| anomaly.anomaly_type == AnomalyType::BurstActivity));
+        assert!(
+            fourth
+                .anomalies
+                .iter()
+                .any(|anomaly| anomaly.anomaly_type == AnomalyType::BurstActivity)
+        );
         assert_eq!(fourth.igor_assessments.len(), 1);
     }
 }

@@ -102,18 +102,13 @@ impl Config {
         let occupancy_snapshot_interval_ms: u64 =
             read_env("SPECTRAGUARD_OCCUPANCY_SNAPSHOT_INTERVAL_MS", "1000")?;
         let alert_buffer_size = read_env("SPECTRAGUARD_ALERT_BUFFER_SIZE", "256")?;
-        let power_spike_threshold_db =
-            read_env("SPECTRAGUARD_POWER_SPIKE_THRESHOLD_DB", "12.0")?;
-        let burst_quiet_period_seconds =
-            read_env("SPECTRAGUARD_BURST_QUIET_PERIOD_SECONDS", "10")?;
-        let burst_max_duration_seconds =
-            read_env("SPECTRAGUARD_BURST_MAX_DURATION_SECONDS", "3")?;
+        let power_spike_threshold_db = read_env("SPECTRAGUARD_POWER_SPIKE_THRESHOLD_DB", "12.0")?;
+        let burst_quiet_period_seconds = read_env("SPECTRAGUARD_BURST_QUIET_PERIOD_SECONDS", "10")?;
+        let burst_max_duration_seconds = read_env("SPECTRAGUARD_BURST_MAX_DURATION_SECONDS", "3")?;
         let repeated_pulse_window_seconds =
             read_env("SPECTRAGUARD_REPEATED_PULSE_WINDOW_SECONDS", "10")?;
-        let repeated_pulse_min_count =
-            read_env("SPECTRAGUARD_REPEATED_PULSE_MIN_COUNT", "3")?;
-        let sustained_critical_seconds =
-            read_env("SPECTRAGUARD_SUSTAINED_CRITICAL_SECONDS", "30")?;
+        let repeated_pulse_min_count = read_env("SPECTRAGUARD_REPEATED_PULSE_MIN_COUNT", "3")?;
+        let sustained_critical_seconds = read_env("SPECTRAGUARD_SUSTAINED_CRITICAL_SECONDS", "30")?;
         let igor_correlation_window_seconds =
             read_env("SPECTRAGUARD_IGOR_CORRELATION_WINDOW_SECONDS", "30")?;
         let igor_min_peak_count = read_env("SPECTRAGUARD_IGOR_MIN_PEAK_COUNT", "3")?;
