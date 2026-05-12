@@ -107,6 +107,17 @@ describe("TelemetryStore", () => {
     expect(snapshot.status?.config.freq_range_mhz).toBe("2400:2500");
   });
 
+  test("disconnects back to idle without dropping hydrated telemetry", () => {
+    const store = new TelemetryStore();
+    store.hydrate(initialSnapshot());
+    store.disconnect();
+
+    const snapshot = store.getSnapshot();
+    expect(snapshot.connectionState).toBe("idle");
+    expect(snapshot.health?.state).toBe("online");
+    expect(snapshot.status?.current_mode).toBe("live");
+  });
+
   test("caps sweep history to bounded size", () => {
     const store = new TelemetryStore();
 

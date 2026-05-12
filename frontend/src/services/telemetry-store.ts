@@ -55,6 +55,7 @@ export class TelemetryStore {
   private listeners = new Set<() => void>();
   private socket: WebSocket | null = null;
   private reconnectTimer: number | null = null;
+  private reconnectEnabled = true;
   private state: TelemetryState = initialState;
 
   subscribe = (listener: () => void) => {
@@ -104,6 +105,7 @@ export class TelemetryStore {
     }
 
     this.clearReconnect();
+    this.reconnectEnabled = true;
     this.state = {
       ...this.state,
       connectionState: "connecting",
@@ -133,10 +135,12 @@ export class TelemetryStore {
       this.socket = null;
       this.state = {
         ...this.state,
-        connectionState: "closed",
+        connectionState: this.reconnectEnabled ? "closed" : "idle",
       };
       this.emit();
-      this.scheduleReconnect(url);
+      if (this.reconnectEnabled) {
+        this.scheduleReconnect(url);
+      }
     });
 
     socket.addEventListener("error", () => {
@@ -146,6 +150,24 @@ export class TelemetryStore {
       };
       this.emit();
     });
+  }
+
+  disconnect() {
+    this.reconnectEnabled = false;
+    this.clearReconnect();
+
+    const socket = this.socket;
+    this.socket = null;
+
+    if (socket && socket.readyState !== WebSocket.CLOSED) {
+      socket.close();
+    }
+
+    this.state = {
+      ...this.state,
+      connectionState: "idle",
+    };
+    this.emit();
   }
 
   private applyEvent(event: TelemetryEvent) {

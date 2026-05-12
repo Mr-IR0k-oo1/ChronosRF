@@ -248,23 +248,25 @@ export function DeviceDashboard() {
                     type="button"
                     onClick={() => replaceSearch(recording.session_id)}
                     className={[
-                      "w-full rounded-2xl border px-4 py-3 text-left transition",
+                      "group w-full border px-5 py-4 text-left transition-all duration-200",
                       selected
                         ? "border-[var(--color-accent)] bg-[var(--color-accent-soft)]"
                         : "border-[var(--color-border-secondary)] bg-[var(--color-surface-subtle)] hover:border-[var(--color-border-strong)] hover:bg-[var(--color-surface-hover)]",
                     ].join(" ")}
                   >
-                    <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
-                      <div>
-                        <p className="font-mono text-sm text-[var(--color-text-primary)]">
+                    <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+                      <div className="flex-1">
+                        <p className="font-mono text-xs font-bold text-[var(--color-text-primary)]">
                           {recording.session_id}
                         </p>
-                        <p className="mt-1 text-sm leading-6 text-[var(--color-text-secondary)]">
+                        <p className="mt-2 text-[0.65rem] leading-relaxed text-[var(--color-text-tertiary)] break-all opacity-60 group-hover:opacity-100 transition-opacity">
                           {recording.file_path}
                         </p>
                       </div>
-                      <div className="text-sm text-[var(--color-text-secondary)] md:text-right">
+                      <div className="flex shrink-0 items-center gap-4 text-[0.65rem] font-bold uppercase tracking-wider text-[var(--color-text-secondary)]">
+                        <div className="h-4 w-[1px] bg-[var(--color-border-secondary)] hidden md:block" />
                         <p>{formatBytes(recording.size_bytes)}</p>
+                        <div className="h-4 w-[1px] bg-[var(--color-border-secondary)] hidden md:block" />
                         <p>{formatTimestamp(recording.modified_at_ms)}</p>
                       </div>
                     </div>
@@ -282,36 +284,40 @@ export function DeviceDashboard() {
 
         <Panel title="Selected Session" eyebrow="Replay context">
           {selectedRecording ? (
-            <div className="space-y-4">
+            <div className="space-y-6">
               <div>
-                <p className="font-mono text-sm text-[var(--color-text-primary)]">
+                <p className="font-mono text-sm font-bold text-[var(--color-text-primary)] uppercase tracking-tight">
                   {selectedRecording.session_id}
                 </p>
-                <p className="mt-2 text-sm leading-6 text-[var(--color-text-secondary)]">
+                <p className="mt-3 text-[0.65rem] leading-relaxed text-[var(--color-text-secondary)] break-all">
                   {selectedRecording.file_path}
                 </p>
               </div>
-              <dl className="grid gap-3">
+              <dl className="grid gap-2">
                 <Fact label="Modified" value={formatTimestamp(selectedRecording.modified_at_ms)} />
                 <Fact label="Size" value={formatBytes(selectedRecording.size_bytes)} />
-                <Fact
-                  label="Event count"
-                  value={formatNullableMetric(selectedRecording.event_count)}
-                />
-                <Fact
-                  label="Alert count"
-                  value={formatNullableMetric(selectedRecording.alert_count)}
-                />
-                <Fact
-                  label="Anomaly count"
-                  value={formatNullableMetric(selectedRecording.anomaly_count)}
-                />
-                <Fact
-                  label="IGOR count"
-                  value={formatNullableMetric(selectedRecording.igor_count)}
-                />
+                <div className="grid grid-cols-2 gap-2">
+                  <Fact
+                    label="Events"
+                    value={formatNullableMetric(selectedRecording.event_count)}
+                  />
+                  <Fact
+                    label="Alerts"
+                    value={formatNullableMetric(selectedRecording.alert_count)}
+                  />
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <Fact
+                    label="Anomalies"
+                    value={formatNullableMetric(selectedRecording.anomaly_count)}
+                  />
+                  <Fact
+                    label="IGOR"
+                    value={formatNullableMetric(selectedRecording.igor_count)}
+                  />
+                </div>
               </dl>
-              <p className="text-xs leading-6 text-[var(--color-text-tertiary)]">
+              <p className="text-[0.6rem] leading-relaxed text-[var(--color-text-tertiary)] italic opacity-60">
                 Extended per-session metrics will populate automatically once the backend exposes richer recording summaries. The current frontend already preserves that interface.
               </p>
             </div>
@@ -338,14 +344,14 @@ function Fact({
   mono?: boolean;
 }) {
   return (
-    <div className="rounded-2xl border border-[var(--color-border-secondary)] bg-[var(--color-surface-subtle)] px-4 py-3">
-      <dt className="text-[0.68rem] uppercase tracking-[0.18em] text-[var(--color-text-tertiary)]">
+    <div className="border border-[var(--color-border-secondary)] bg-[var(--color-surface-subtle)] px-4 py-3 transition-colors hover:border-[var(--color-border-strong)]">
+      <dt className="text-[0.6rem] font-bold uppercase tracking-[0.2em] text-[var(--color-text-tertiary)]">
         {label}
       </dt>
       <dd
         className={[
-          "mt-2 text-sm text-[var(--color-text-primary)]",
-          mono ? "font-mono" : "",
+          "mt-1 text-xs text-[var(--color-text-primary)] uppercase",
+          mono ? "font-mono" : "font-bold",
         ]
           .filter(Boolean)
           .join(" ")}
@@ -355,6 +361,7 @@ function Fact({
     </div>
   );
 }
+
 
 function formatNullableMetric(value: number | null) {
   return value === null ? "Unavailable" : `${value}`;

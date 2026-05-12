@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
+import { Suspense } from "react";
 
 import { AppShell } from "@/components/app-shell";
 import { TelemetryProvider } from "@/components/telemetry-provider";
@@ -17,7 +18,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "SpectraGuard",
+  title: "ChronosRF",
   description: "Operational RF monitoring and threat detection dashboard.",
 };
 
@@ -36,7 +37,9 @@ export default async function RootLayout({
     >
       <body className="min-h-screen antialiased">
         <TelemetryProvider initialSnapshot={initialSnapshot}>
-          <AppShell>{children}</AppShell>
+          <Suspense fallback={null}>
+            <AppShell>{children}</AppShell>
+          </Suspense>
         </TelemetryProvider>
       </body>
     </html>

@@ -68,22 +68,26 @@ export function OccupancyDashboard() {
               {bins.map((bin) => (
                 <article
                   key={bin.frequency_hz}
-                  className="orbit-card p-4"
+                  className="orbit-card p-5"
                 >
-                  <p className="font-mono text-sm text-[var(--color-text-primary)]">
-                    {formatFrequency(bin.frequency_hz)}
-                  </p>
-                  <div className="mt-4 h-2 overflow-hidden rounded-full bg-[var(--color-border-secondary)]">
+                  <div className="flex items-center justify-between">
+                    <p className="font-mono text-xs font-bold text-[var(--color-text-primary)]">
+                      {formatFrequency(bin.frequency_hz)}
+                    </p>
+                    <div className="h-1.5 w-1.5 rounded-full bg-[var(--color-accent)] shadow-[0_0_8px_var(--color-accent)]" />
+                  </div>
+                  <div className="mt-5 relative h-1.5 overflow-hidden rounded-full bg-[var(--color-surface-strong)]">
                     <div
-                      className="h-full rounded-full bg-[linear-gradient(90deg,var(--color-accent),var(--color-accent-strong))]"
+                      className="absolute inset-y-0 left-0 rounded-full bg-[var(--color-accent)] shadow-[0_0_8px_var(--color-accent)]"
                       style={{ width: `${Math.min(bin.activity_percentage, 100)}%` }}
                     />
                   </div>
-                  <div className="mt-3 flex items-center justify-between text-sm text-[var(--color-text-secondary)]">
-                    <span>{bin.activity_percentage.toFixed(1)}%</span>
+                  <div className="mt-4 flex items-center justify-between text-[0.65rem] font-bold uppercase tracking-wider text-[var(--color-text-secondary)]">
+                    <span>{bin.activity_percentage.toFixed(1)}% BASE</span>
+                    <div className="h-3 w-[1px] bg-[var(--color-border-secondary)]" />
                     <span>{bin.average_power.toFixed(1)} dB</span>
                   </div>
-                  <p className="mt-2 text-xs uppercase tracking-[0.18em] text-[var(--color-text-tertiary)]">
+                  <p className="mt-3 text-[0.6rem] font-bold uppercase tracking-[0.2em] text-[var(--color-text-tertiary)] opacity-60">
                     recent {bin.recent_activity_percentage.toFixed(1)}%
                   </p>
                 </article>
@@ -100,22 +104,24 @@ export function OccupancyDashboard() {
               <ResponsiveContainer width="100%" height="100%">
                 <BarChart data={topBins} layout="vertical" margin={{ left: 12, right: 16 }}>
                   <CartesianGrid stroke="var(--color-border-secondary)" strokeDasharray="3 3" />
-                  <XAxis type="number" tick={{ fill: "var(--color-text-secondary)", fontSize: 12 }} />
+                  <XAxis type="number" tick={{ fill: "var(--color-text-secondary)", fontSize: 10, fontWeight: "bold" }} />
                   <YAxis
                     type="category"
                     dataKey="frequency"
-                    tick={{ fill: "var(--color-text-secondary)", fontSize: 12 }}
+                    tick={{ fill: "var(--color-text-secondary)", fontSize: 10, fontWeight: "bold" }}
                     width={96}
                   />
                   <Tooltip
                     contentStyle={{
                       background: "var(--color-surface-strong)",
                       border: "1px solid var(--color-border-secondary)",
-                      borderRadius: 16,
+                      borderRadius: 4,
+                      fontSize: "12px",
+                      fontWeight: "bold",
                     }}
                   />
-                  <Bar dataKey="activity" fill="var(--color-accent)" radius={[0, 8, 8, 0]} />
-                  <Bar dataKey="recent" fill="var(--color-accent-strong)" radius={[0, 8, 8, 0]} />
+                  <Bar dataKey="activity" fill="var(--color-accent)" radius={[0, 2, 2, 0]} />
+                  <Bar dataKey="recent" fill="var(--color-accent-strong)" radius={[0, 2, 2, 0]} />
                 </BarChart>
               </ResponsiveContainer>
             </div>
@@ -130,8 +136,11 @@ export function OccupancyDashboard() {
 
 function EmptyState({ message }: { message: string }) {
   return (
-    <div className="rounded-2xl border border-dashed border-[var(--color-border-secondary)] bg-[var(--color-surface)] p-8 text-sm text-[var(--color-text-secondary)]">
-      {message}
+    <div className="border border-dashed border-[var(--color-border-secondary)] bg-[var(--color-surface-subtle)] p-12 text-center">
+      <p className="text-[0.65rem] font-bold uppercase tracking-[0.2em] text-[var(--color-text-tertiary)]">
+        {message}
+      </p>
     </div>
   );
 }
+

@@ -31,6 +31,17 @@ describe("telemetry-view", () => {
     expect(state.source).toBe("live");
   });
 
+  test("keeps connecting telemetry from looking disconnected", () => {
+    const telemetry = buildTelemetryState({
+      connectionState: "connecting",
+    });
+
+    const state = getOperationalState(telemetry, 2_000);
+
+    expect(state.isDisconnected).toBe(false);
+    expect(state.isStale).toBe(false);
+  });
+
   test("builds and filters a mixed investigation timeline", () => {
     const telemetry = buildTelemetryState();
     const timeline = buildInvestigationTimeline(telemetry);

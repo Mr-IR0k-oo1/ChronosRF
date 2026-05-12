@@ -18,6 +18,10 @@ export function TelemetryProvider({
   useEffect(() => {
     telemetryStore.hydrate(initialSnapshot);
     telemetryStore.connect(getBackendWsUrl());
+
+    return () => {
+      telemetryStore.disconnect();
+    };
   }, [initialSnapshot]);
 
   return <>{children}</>;

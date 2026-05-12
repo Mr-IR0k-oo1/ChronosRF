@@ -182,10 +182,10 @@ export function ThreatDashboard() {
                 type="button"
                 onClick={() => replaceSearch({ severity, incident: null })}
                 className={[
-                  "rounded-full px-3 py-2 text-xs uppercase tracking-[0.18em] transition-colors",
+                  "border px-4 py-1.5 text-[0.65rem] font-bold uppercase tracking-[0.2em] transition-all duration-200",
                   filters.severity === severity
-                    ? "bg-[var(--color-text-primary)] text-[var(--color-background)]"
-                    : "bg-[var(--color-surface-subtle)] text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-hover)]",
+                    ? "border-[var(--color-accent)] bg-[var(--color-accent-soft)] text-[var(--color-accent)]"
+                    : "border-[var(--color-border-secondary)] bg-[var(--color-surface-subtle)] text-[var(--color-text-tertiary)] hover:border-[var(--color-border-strong)] hover:text-[var(--color-text-secondary)]",
                 ].join(" ")}
               >
                 {severity}
@@ -234,37 +234,46 @@ export function ThreatDashboard() {
                     type="button"
                     onClick={() => replaceSearch({ incident: entry.id })}
                     className={[
-                      "w-full rounded-2xl border px-4 py-3 text-left transition",
+                      "group w-full border px-5 py-4 text-left transition-all duration-200",
                       selected
                         ? "border-[var(--color-accent)] bg-[var(--color-accent-soft)]"
                         : "border-[var(--color-border-secondary)] bg-[var(--color-surface-subtle)] hover:border-[var(--color-border-strong)] hover:bg-[var(--color-surface-hover)]",
                     ].join(" ")}
                   >
-                    <div className="flex items-start justify-between gap-4">
-                      <div>
-                        <p className="text-sm font-semibold text-[var(--color-text-primary)]">
-                          {entry.title}
-                        </p>
-                        <p className="mt-1 text-sm uppercase tracking-[0.18em] text-[var(--color-text-tertiary)]">
+                    <div className="flex items-start justify-between gap-6">
+                      <div className="flex-1">
+                        <div className="flex items-center gap-3">
+                          <div className={["h-1.5 w-1.5 rounded-full", 
+                            entry.severity === "critical" ? "bg-[var(--color-error)]" : 
+                            entry.severity === "high" ? "bg-[var(--color-warning)]" : "bg-[var(--color-info)]"
+                          ].join(" ")} />
+                          <p className="text-xs font-bold uppercase tracking-wider text-[var(--color-text-primary)]">
+                            {entry.title}
+                          </p>
+                        </div>
+                        <p className="mt-2 text-[0.62rem] font-bold uppercase tracking-[0.25em] text-[var(--color-text-tertiary)]">
                           {entry.kindLabel} / {entry.severity}
                         </p>
-                        <p className="mt-2 text-sm leading-6 text-[var(--color-text-secondary)]">
+                        <p className="mt-3 text-xs leading-relaxed text-[var(--color-text-secondary)] group-hover:text-[var(--color-text-primary)] transition-colors">
                           {entry.message}
                         </p>
                       </div>
-                      <div className="text-right text-xs uppercase tracking-[0.18em] text-[var(--color-text-tertiary)]">
-                        <p>{entry.source}</p>
-                        <p className="mt-2 font-mono normal-case text-[var(--color-text-secondary)]">
+                      <div className="text-right">
+                        <p className="text-[0.6rem] font-bold uppercase tracking-[0.2em] text-[var(--color-text-tertiary)]">{entry.source}</p>
+                        <p className="mt-2 font-mono text-[0.65rem] text-[var(--color-text-tertiary)]">
                           {formatTimestamp(entry.timestamp_ms)}
                         </p>
                       </div>
                     </div>
-                    <p className="mt-3 font-mono text-xs text-[var(--color-text-secondary)]">
-                      {formatFrequencyRange(
-                        entry.frequency_start_hz,
-                        entry.frequency_end_hz,
-                      )}
-                    </p>
+                    <div className="mt-4 flex items-center gap-2 border-t border-[var(--color-border-secondary)] pt-3 opacity-60">
+                      <div className="h-1 w-1 bg-[var(--color-accent)]" />
+                      <p className="font-mono text-[0.65rem] text-[var(--color-text-secondary)]">
+                        {formatFrequencyRange(
+                          entry.frequency_start_hz,
+                          entry.frequency_end_hz,
+                        )}
+                      </p>
+                    </div>
                   </button>
                 );
               })}
@@ -280,7 +289,7 @@ export function ThreatDashboard() {
               action={
                 <Link
                   href="/device"
-                  className="rounded-full border border-[var(--color-border-secondary)] px-3 py-2 text-xs font-semibold uppercase tracking-[0.18em] text-[var(--color-text-secondary)] transition hover:bg-[var(--color-surface-hover)] hover:text-[var(--color-text-primary)]"
+                  className="inline-block border border-[var(--color-border-secondary)] px-4 py-2 text-[0.65rem] font-bold uppercase tracking-[0.2em] text-[var(--color-text-secondary)] transition hover:bg-[var(--color-surface-hover)] hover:text-[var(--color-text-primary)]"
                 >
                   Open capture ops
                 </Link>
@@ -292,29 +301,29 @@ export function ThreatDashboard() {
         <div className="space-y-5">
           <Panel title="Selected Incident" eyebrow="Drill-down and correlation">
             {selectedIncident ? (
-              <div className="space-y-4">
-                <div className="flex flex-wrap items-center gap-2 text-xs uppercase tracking-[0.18em] text-[var(--color-text-tertiary)]">
-                  <span className="rounded-full bg-[var(--color-surface-subtle)] px-3 py-2 text-[var(--color-text-primary)]">
+              <div className="space-y-6">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="border border-[var(--color-border-secondary)] bg-[var(--color-surface-subtle)] px-3 py-1.5 text-[0.6rem] font-bold uppercase tracking-[0.15em] text-[var(--color-text-primary)]">
                     {selectedIncident.kindLabel}
                   </span>
-                  <span className="rounded-full bg-[var(--color-surface-subtle)] px-3 py-2 text-[var(--color-text-primary)]">
+                  <span className="border border-[var(--color-border-secondary)] bg-[var(--color-surface-subtle)] px-3 py-1.5 text-[0.6rem] font-bold uppercase tracking-[0.15em] text-[var(--color-text-primary)]">
                     {selectedIncident.severity}
                   </span>
-                  <span className="rounded-full bg-[var(--color-surface-subtle)] px-3 py-2 text-[var(--color-text-primary)]">
+                  <span className="border border-[var(--color-border-secondary)] bg-[var(--color-surface-subtle)] px-3 py-1.5 text-[0.6rem] font-bold uppercase tracking-[0.15em] text-[var(--color-text-primary)]">
                     {selectedIncident.source}
                   </span>
                 </div>
 
                 <div>
-                  <h3 className="text-lg font-semibold text-[var(--color-text-primary)]">
+                  <h3 className="text-lg font-bold uppercase tracking-wide text-[var(--color-text-primary)]">
                     {selectedIncident.title}
                   </h3>
-                  <p className="mt-2 text-sm leading-7 text-[var(--color-text-secondary)]">
+                  <p className="mt-3 text-xs leading-relaxed text-[var(--color-text-secondary)]">
                     {selectedIncident.message}
                   </p>
                 </div>
 
-                <dl className="grid gap-3 sm:grid-cols-2">
+                <dl className="grid gap-2 sm:grid-cols-2">
                   <DetailFact
                     label="Observed"
                     value={formatTimestamp(selectedIncident.timestamp_ms)}
@@ -340,10 +349,10 @@ export function ThreatDashboard() {
                   />
                 </dl>
 
-                <div className="flex flex-wrap gap-2">
+                <div className="flex flex-wrap gap-3">
                   <Link
                     href="/device"
-                    className="rounded-full border border-[var(--color-border-secondary)] px-3 py-2 text-xs font-semibold uppercase tracking-[0.18em] text-[var(--color-text-secondary)] transition hover:bg-[var(--color-surface-hover)] hover:text-[var(--color-text-primary)]"
+                    className="border border-[var(--color-border-secondary)] px-4 py-2 text-[0.65rem] font-bold uppercase tracking-[0.2em] text-[var(--color-text-secondary)] transition hover:bg-[var(--color-surface-hover)] hover:text-[var(--color-text-primary)]"
                   >
                     Open capture ops
                   </Link>
@@ -361,37 +370,37 @@ export function ThreatDashboard() {
                           });
                         })
                       }
-                      className="rounded-full border border-[var(--color-info)]/30 bg-[var(--color-info)]/10 px-3 py-2 text-xs font-semibold uppercase tracking-[0.18em] text-[var(--color-info)] transition hover:bg-[var(--color-info)]/15 disabled:cursor-not-allowed disabled:opacity-60"
+                      className="border border-[var(--color-info)]/30 bg-[var(--color-info)]/10 px-4 py-2 text-[0.65rem] font-bold uppercase tracking-[0.2em] text-[var(--color-info)] transition hover:bg-[var(--color-info)]/15 disabled:cursor-not-allowed disabled:opacity-60"
                     >
                       Launch playback
                     </button>
                   ) : null}
                 </div>
 
-                <div className="border-t border-[var(--color-border-secondary)] pt-4">
-                  <h4 className="text-sm font-semibold text-[var(--color-text-primary)]">
+                <div className="border-t border-[var(--color-border-secondary)] pt-6">
+                  <h4 className="text-[0.65rem] font-bold uppercase tracking-[0.25em] text-[var(--color-text-tertiary)]">
                     Correlated context
                   </h4>
                   {correlatedEntries.length > 0 ? (
-                    <div className="mt-3 space-y-2">
+                    <div className="mt-4 space-y-2">
                       {correlatedEntries.map((entry) => (
                         <button
                           key={entry.id}
                           type="button"
                           onClick={() => replaceSearch({ incident: entry.id })}
-                          className="w-full rounded-2xl border border-[var(--color-border-secondary)] bg-[var(--color-surface-subtle)] px-4 py-3 text-left transition hover:border-[var(--color-border-strong)] hover:bg-[var(--color-surface-hover)]"
+                          className="group w-full border border-[var(--color-border-secondary)] bg-[var(--color-surface-subtle)] px-4 py-3 text-left transition-all hover:border-[var(--color-border-strong)] hover:bg-[var(--color-surface-hover)]"
                         >
-                          <p className="text-sm font-semibold text-[var(--color-text-primary)]">
+                          <p className="text-xs font-bold uppercase tracking-wider text-[var(--color-text-primary)]">
                             {entry.title}
                           </p>
-                          <p className="mt-1 text-sm leading-6 text-[var(--color-text-secondary)]">
+                          <p className="mt-2 text-xs leading-relaxed text-[var(--color-text-secondary)] group-hover:text-[var(--color-text-primary)] transition-colors">
                             {entry.message}
                           </p>
                         </button>
                       ))}
                     </div>
                   ) : (
-                    <div className="mt-3">
+                    <div className="mt-4">
                       <EmptyState
                         title="No same-band correlates"
                         message="This incident does not currently have additional retained entries in the same frequency bucket."
@@ -411,7 +420,7 @@ export function ThreatDashboard() {
 
           <Panel title="Session Linkage" eyebrow="Replay support">
             <div className="space-y-4">
-              <label className="block text-[0.68rem] uppercase tracking-[0.18em] text-[var(--color-text-tertiary)]">
+              <label className="block text-[0.62rem] font-bold uppercase tracking-[0.25em] text-[var(--color-text-tertiary)]">
                 Investigation recording
               </label>
               <select
@@ -421,7 +430,7 @@ export function ThreatDashboard() {
                     recording: event.target.value || null,
                   })
                 }
-                className="w-full rounded-2xl border border-[var(--color-border-secondary)] bg-[var(--color-surface-subtle)] px-4 py-3 text-sm text-[var(--color-text-primary)] outline-none transition focus:border-[var(--color-accent)]"
+                className="w-full border border-[var(--color-border-secondary)] bg-[var(--color-surface-subtle)] px-4 py-3 text-xs font-bold text-[var(--color-text-primary)] outline-none transition focus:border-[var(--color-accent)]"
               >
                 {recordings.length > 0 ? (
                   recordings.map((recording) => (
@@ -450,7 +459,7 @@ export function ThreatDashboard() {
                         })
                       : undefined
                   }
-                  className="rounded-full border border-[var(--color-info)]/30 bg-[var(--color-info)]/10 px-3 py-2 text-xs font-semibold uppercase tracking-[0.18em] text-[var(--color-info)] transition hover:bg-[var(--color-info)]/15 disabled:cursor-not-allowed disabled:opacity-60"
+                  className="border border-[var(--color-info)]/30 bg-[var(--color-info)]/10 px-4 py-2 text-[0.65rem] font-bold uppercase tracking-[0.2em] text-[var(--color-info)] transition hover:bg-[var(--color-info)]/15 disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   Start playback
                 </button>
@@ -464,7 +473,7 @@ export function ThreatDashboard() {
                       replaceSearch({ source: "all" });
                     })
                   }
-                  className="rounded-full border border-[var(--color-border-secondary)] px-3 py-2 text-xs font-semibold uppercase tracking-[0.18em] text-[var(--color-text-secondary)] transition hover:bg-[var(--color-surface-hover)] hover:text-[var(--color-text-primary)] disabled:cursor-not-allowed disabled:opacity-60"
+                  className="border border-[var(--color-border-secondary)] px-4 py-2 text-[0.65rem] font-bold uppercase tracking-[0.2em] text-[var(--color-text-secondary)] transition hover:bg-[var(--color-surface-hover)] hover:text-[var(--color-text-primary)] disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   Stop playback
                 </button>
@@ -477,27 +486,27 @@ export function ThreatDashboard() {
                       await refreshRecordings();
                     })
                   }
-                  className="rounded-full border border-[var(--color-border-secondary)] px-3 py-2 text-xs font-semibold uppercase tracking-[0.18em] text-[var(--color-text-secondary)] transition hover:bg-[var(--color-surface-hover)] hover:text-[var(--color-text-primary)] disabled:cursor-not-allowed disabled:opacity-60"
+                  className="border border-[var(--color-border-secondary)] px-4 py-2 text-[0.65rem] font-bold uppercase tracking-[0.2em] text-[var(--color-text-secondary)] transition hover:bg-[var(--color-surface-hover)] hover:text-[var(--color-text-primary)] disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   Refresh sessions
                 </button>
               </div>
 
               {error ? (
-                <p className="rounded-2xl border border-[var(--color-error)]/25 bg-[var(--color-error)]/10 px-4 py-3 text-sm text-[var(--color-error)]">
+                <p className="border border-[var(--color-error)]/25 bg-[var(--color-error)]/10 px-4 py-3 text-xs font-medium text-[var(--color-error)]">
                   {error}
                 </p>
               ) : null}
 
               {selectedRecording ? (
-                <div className="rounded-2xl border border-[var(--color-border-secondary)] bg-[var(--color-surface-subtle)] px-4 py-4">
-                  <p className="font-mono text-sm text-[var(--color-text-primary)]">
+                <div className="border border-[var(--color-border-secondary)] bg-[var(--color-surface-subtle)] px-5 py-5">
+                  <p className="font-mono text-xs font-bold text-[var(--color-text-primary)]">
                     {selectedRecording.session_id}
                   </p>
-                  <p className="mt-2 text-sm leading-6 text-[var(--color-text-secondary)]">
+                  <p className="mt-3 text-[0.65rem] leading-relaxed text-[var(--color-text-secondary)] break-all">
                     {selectedRecording.file_path}
                   </p>
-                  <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                  <div className="mt-5 grid gap-2 sm:grid-cols-2">
                     <DetailFact
                       label="Size"
                       value={formatBytes(selectedRecording.size_bytes)}
@@ -515,7 +524,7 @@ export function ThreatDashboard() {
                       value={formatNullableMetric(selectedRecording.alert_count)}
                     />
                   </div>
-                  <p className="mt-4 text-xs leading-6 text-[var(--color-text-tertiary)]">
+                  <p className="mt-5 text-[0.6rem] leading-relaxed text-[var(--color-text-tertiary)] italic">
                     Event-to-recording linkage is operator-selected in this frontend-only phase. Backend-native session summaries can replace this panel once the SDR telemetry milestone permits API expansion.
                   </p>
                 </div>
@@ -547,13 +556,13 @@ function FilterSelect({
 }) {
   return (
     <label className="block">
-      <span className="text-[0.68rem] uppercase tracking-[0.18em] text-[var(--color-text-tertiary)]">
+      <span className="text-[0.62rem] font-bold uppercase tracking-[0.25em] text-[var(--color-text-tertiary)]">
         {label}
       </span>
       <select
         value={value}
         onChange={(event) => onChange(event.target.value)}
-        className="mt-2 w-full rounded-2xl border border-[var(--color-border-secondary)] bg-[var(--color-surface-subtle)] px-4 py-3 text-sm text-[var(--color-text-primary)] outline-none transition focus:border-[var(--color-accent)]"
+        className="mt-2 w-full border border-[var(--color-border-secondary)] bg-[var(--color-surface-subtle)] px-4 py-3 text-xs font-bold text-[var(--color-text-primary)] outline-none transition focus:border-[var(--color-accent)]"
       >
         {options.map((option) => (
           <option key={option.value} value={option.value}>
@@ -567,16 +576,17 @@ function FilterSelect({
 
 function DetailFact({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-2xl border border-[var(--color-border-secondary)] bg-[var(--color-surface-subtle)] px-4 py-3">
-      <p className="text-[0.68rem] uppercase tracking-[0.18em] text-[var(--color-text-tertiary)]">
+    <div className="border border-[var(--color-border-secondary)] bg-[var(--color-surface-subtle)] px-4 py-3">
+      <p className="text-[0.6rem] font-bold uppercase tracking-[0.2em] text-[var(--color-text-tertiary)]">
         {label}
       </p>
-      <p className="mt-2 font-mono text-sm text-[var(--color-text-primary)]">
+      <p className="mt-1 font-mono text-xs text-[var(--color-text-primary)] uppercase">
         {value}
       </p>
     </div>
   );
 }
+
 
 function formatNullableMetric(value: number | null) {
   return value === null ? "Unavailable" : `${value}`;

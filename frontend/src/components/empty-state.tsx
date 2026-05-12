@@ -16,15 +16,18 @@ export function EmptyState({
   return (
     <div
       className={[
-        "rounded-md border border-dashed border-[var(--color-border-secondary)] bg-[var(--color-surface-subtle)] text-[var(--color-text-secondary)]",
-        compact ? "p-4" : "p-6",
+        "border border-dashed border-[var(--color-border-secondary)] bg-[var(--color-surface-subtle)] text-[var(--color-text-secondary)]",
+        compact ? "px-6 py-6" : "px-8 py-10 text-center",
       ].join(" ")}
     >
-      <h3 className="text-sm font-semibold text-[var(--color-text-primary)]">
+      <h3 className="text-xs font-bold uppercase tracking-[0.2em] text-[var(--color-text-primary)]">
         {title}
       </h3>
-      <p className="mt-2 text-sm leading-6">{message}</p>
-      {action ? <div className="mt-4">{action}</div> : null}
+      <p className="mt-3 text-[0.65rem] font-medium leading-relaxed max-w-sm mx-auto">
+        {message}
+      </p>
+      {action ? <div className="mt-6 flex justify-center">{action}</div> : null}
     </div>
   );
 }
+

@@ -6,9 +6,10 @@ import { type SweepData } from "@/services/types";
 
 interface WaterfallCanvasProps {
   sweeps: SweepData[];
+  className?: string;
 }
 
-export function WaterfallCanvas({ sweeps }: WaterfallCanvasProps) {
+export function WaterfallCanvas({ sweeps, className }: WaterfallCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
   useEffect(() => {
@@ -48,7 +49,10 @@ export function WaterfallCanvas({ sweeps }: WaterfallCanvasProps) {
     <div className="overflow-hidden rounded-2xl border border-[var(--color-border-secondary)] bg-[var(--color-surface-strong)]/70">
       <canvas
         ref={canvasRef}
-        className="h-64 w-full [image-rendering:pixelated]"
+        className={[
+          "w-full [image-rendering:pixelated]",
+          className ?? "h-64",
+        ].join(" ")}
       />
     </div>
   );

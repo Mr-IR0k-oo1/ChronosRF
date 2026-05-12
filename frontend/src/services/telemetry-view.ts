@@ -75,7 +75,8 @@ export function getOperationalState(
   telemetry: Pick<TelemetryState, "connectionState" | "health" | "lastMessageAt" | "status">,
   now = Date.now(),
 ): OperationalState {
-  const isDisconnected = telemetry.connectionState !== "open";
+  const isDisconnected =
+    telemetry.connectionState === "closed" || telemetry.connectionState === "error";
   const lastMessageAge =
     telemetry.lastMessageAt === null ? null : Math.max(0, now - telemetry.lastMessageAt);
   const isStale = !isDisconnected && lastMessageAge !== null && lastMessageAge > staleThresholdMs;

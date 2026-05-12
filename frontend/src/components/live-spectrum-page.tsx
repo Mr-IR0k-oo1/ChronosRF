@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useSearchParams } from "next/navigation";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useDeferredValue, useMemo } from "react";
 import {
   CartesianGrid,
@@ -41,6 +41,8 @@ const tooltipContentStyle = {
 };
 
 export function LiveSpectrumPage() {
+  const pathname = usePathname();
+  const router = useRouter();
   const searchParams = useSearchParams();
   const telemetry = useTelemetry();
   const sweeps = useDeferredValue(telemetry.sweeps);
@@ -61,7 +63,13 @@ export function LiveSpectrumPage() {
     [telemetry.occupancy],
   );
   const focusedSection = searchParams.get("section");
+  const viewMode = searchParams.get("view") === "focus" ? "focus" : "overview";
+  const highlightedSpectrum = focusedSection === "spectrum";
+  const highlightedWaterfall = focusedSection === "waterfall";
+  const highlightedAlerts = focusedSection === "alerts";
+  const highlightedIgor = focusedSection === "igor";
   const highlightedOccupancy = focusedSection === "occupancy";
+  const highlightedDevice = focusedSection === "device";
   const igorWatchlist = useMemo(
     () =>
       [...telemetry.igorAssessments]
@@ -69,6 +77,44 @@ export function LiveSpectrumPage() {
         .slice(0, 4),
     [telemetry.igorAssessments],
   );
+
+  function buildLiveHref(
+    updates: Partial<{ view: "overview" | "focus" | null; section: string | null }>,
+  ) {
+    const next = new URLSearchParams(searchParams.toString());
+
+    if (updates.view !== undefined) {
+      if (updates.view === null || updates.view === "overview") {
+        next.delete("view");
+      } else {
+        next.set("view", updates.view);
+      }
+    }
+
+    if (updates.section !== undefined) {
+      if (updates.section === null) {
+        next.delete("section");
+      } else {
+        next.set("section", updates.section);
+      }
+    }
+
+    const query = next.toString();
+    return query ? `${pathname}?${query}` : pathname;
+  }
+
+  function replaceLiveSearch(
+    updates: Partial<{ view: "overview" | "focus" | null; section: string | null }>,
+  ) {
+    const href = buildLiveHref(updates);
+    router.replace(href, { scroll: false });
+  }
+
+  const commandLayoutClass =
+    viewMode === "focus"
+      ? "grid gap-4"
+      : "grid gap-4 xl:grid-cols-[minmax(0,1.7fr)_minmax(360px,0.95fr)]";
+  const rightRailClass = viewMode === "focus" ? "grid gap-4 md:grid-cols-2" : "space-y-4";
 
   return (
     <div className="space-y-4">
@@ -112,9 +158,55 @@ export function LiveSpectrumPage() {
         />
       </section>
 
-      <div className="grid gap-4 xl:grid-cols-[minmax(0,1.7fr)_minmax(360px,0.95fr)]">
+      <div className="flex flex-col gap-3 rounded-2xl border border-[var(--color-border-secondary)] bg-[var(--color-surface-strong)]/70 px-4 py-3 shadow-[0_16px_48px_rgba(0,0,0,0.18)] backdrop-blur-sm md:flex-row md:items-center md:justify-between">
+        <div>
+          <p className="text-[0.6rem] font-bold uppercase tracking-[0.25em] text-[var(--color-text-tertiary)]">
+            Viewing
+          </p>
+          <p className="mt-1 text-sm font-semibold text-[var(--color-text-primary)]">
+            {viewMode === "focus" ? "Focus mode" : "Overview mode"}
+          </p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <ControlPill active={viewMode === "overview"} onClick={() => replaceLiveSearch({ view: null })}>
+            Overview
+          </ControlPill>
+          <ControlPill active={viewMode === "focus"} onClick={() => replaceLiveSearch({ view: "focus" })}>
+            Focus
+          </ControlPill>
+          <SectionLink href={buildLiveHref({ section: "spectrum" })} active={highlightedSpectrum}>
+            Spectrum
+          </SectionLink>
+          <SectionLink href={buildLiveHref({ section: "waterfall" })} active={highlightedWaterfall}>
+            Waterfall
+          </SectionLink>
+          <SectionLink href={buildLiveHref({ section: "alerts" })} active={highlightedAlerts}>
+            Alerts
+          </SectionLink>
+          <SectionLink href={buildLiveHref({ section: "igor" })} active={highlightedIgor}>
+            IGOR
+          </SectionLink>
+          <SectionLink href={buildLiveHref({ section: "occupancy" })} active={highlightedOccupancy}>
+            Occupancy
+          </SectionLink>
+          <SectionLink href={buildLiveHref({ section: "device" })} active={highlightedDevice}>
+            Device
+          </SectionLink>
+        </div>
+      </div>
+
+      <div className={commandLayoutClass}>
         <div className="space-y-4">
-          <Panel title="Operational Spectrum" eyebrow="Live triage">
+          <Panel
+            title="Operational Spectrum"
+            eyebrow="Live triage"
+            className={[
+              viewMode === "focus" ? "min-h-[34rem]" : "",
+              highlightedSpectrum ? "ring-1 ring-[var(--color-accent)]" : "",
+            ]
+              .filter(Boolean)
+              .join(" ")}
+          >
             <div className="mb-4 flex flex-wrap items-center gap-3 border-b border-[var(--color-border-secondary)] pb-4 text-xs text-[var(--color-text-secondary)]">
               <span>Window {formatFrequencyRange(latestSweep?.frequency_start_hz ?? null, latestSweep?.frequency_end_hz ?? null)}</span>
               <span>Peak bands {peaks.slice(-12).length}</span>
@@ -127,7 +219,7 @@ export function LiveSpectrumPage() {
               </Link>
             </div>
           {chartData.length > 0 ? (
-            <div className="h-80">
+            <div className={viewMode === "focus" ? "h-96" : "h-80"}>
               <ResponsiveContainer width="100%" height="100%">
                 <LineChart data={chartData}>
                   <CartesianGrid
@@ -174,9 +266,21 @@ export function LiveSpectrumPage() {
           )}
           </Panel>
 
-          <Panel title="Waterfall History" eyebrow="Recent sweeps">
+          <Panel
+            title="Waterfall History"
+            eyebrow="Recent sweeps"
+            className={[
+              viewMode === "focus" ? "min-h-[20rem]" : "",
+              highlightedWaterfall ? "ring-1 ring-[var(--color-accent)]" : "",
+            ]
+              .filter(Boolean)
+              .join(" ")}
+          >
             {sweeps.length > 0 ? (
-              <WaterfallCanvas sweeps={sweeps} />
+              <WaterfallCanvas
+                sweeps={sweeps}
+                className={viewMode === "focus" ? "h-80" : undefined}
+              />
             ) : (
               <EmptyState
                 title="Waterfall history is empty"
@@ -186,28 +290,40 @@ export function LiveSpectrumPage() {
           </Panel>
         </div>
 
-        <div className="space-y-4">
-          <Panel title="Prioritized Alert Queue" eyebrow="Critical first">
+        <div className={rightRailClass}>
+          <Panel
+            title="Prioritized Alert Queue"
+            eyebrow="Critical first"
+            className={highlightedAlerts ? "ring-1 ring-[var(--color-accent)]" : undefined}
+          >
             {prioritizedAlerts.length > 0 ? (
               <div className="space-y-2">
                 {prioritizedAlerts.map((alert) => (
                   <Link
                     key={alert.id}
                     href={`/threats?severity=${alert.severity}&incident=${alert.id}`}
-                    className="block rounded-md border border-[var(--color-border-secondary)] px-4 py-2.5 transition hover:border-[var(--color-border-strong)] hover:bg-[var(--color-surface-hover)]"
+                    className="group block border border-[var(--color-border-secondary)] bg-[var(--color-surface-subtle)] px-4 py-3 transition-all hover:border-[var(--color-accent)]/50 hover:bg-[var(--color-surface-hover)]"
                   >
                     <div className="flex items-start justify-between gap-4">
                       <div>
-                        <p className="text-sm font-semibold text-[var(--color-text-primary)]">
-                          {alert.alert_type}
-                        </p>
-                        <p className="mt-1 text-sm leading-6 text-[var(--color-text-secondary)]">
+                        <div className="flex items-center gap-2">
+                          <div className={["h-1.5 w-1.5 rounded-full", 
+                            alert.severity === "critical" ? "bg-[var(--color-error)]" : 
+                            alert.severity === "high" ? "bg-[var(--color-warning)]" : "bg-[var(--color-info)]"
+                          ].join(" ")} />
+                          <p className="text-xs font-bold uppercase tracking-wider text-[var(--color-text-primary)]">
+                            {alert.alert_type}
+                          </p>
+                        </div>
+                        <p className="mt-2 text-xs leading-relaxed text-[var(--color-text-secondary)] group-hover:text-[var(--color-text-primary)] transition-colors">
                           {alert.message}
                         </p>
                       </div>
-                      <div className="text-right text-xs uppercase tracking-[0.18em] text-[var(--color-text-tertiary)]">
-                        <p>{alert.severity}</p>
-                        <p className="mt-2 font-mono normal-case text-[var(--color-text-secondary)]">
+                      <div className="text-right">
+                        <p className="text-[0.6rem] font-bold uppercase tracking-[0.2em] text-[var(--color-text-tertiary)]">
+                          {alert.severity}
+                        </p>
+                        <p className="mt-2 font-mono text-[0.65rem] text-[var(--color-text-tertiary)]">
                           {formatTimestamp(alert.detected_at_ms)}
                         </p>
                       </div>
@@ -224,28 +340,34 @@ export function LiveSpectrumPage() {
             )}
           </Panel>
 
-          <Panel title="IGOR Watchlist" eyebrow="Recent correlated findings">
+          <Panel
+            title="IGOR Watchlist"
+            eyebrow="Recent correlated findings"
+            className={highlightedIgor ? "ring-1 ring-[var(--color-accent)]" : undefined}
+          >
             {igorWatchlist.length > 0 ? (
-              <div className="space-y-3">
+              <div className="space-y-2">
                 {igorWatchlist.map((assessment) => (
                   <Link
                     key={assessment.id}
                     href={`/threats?kind=${assessment.finding_kind}&incident=${assessment.id}`}
-                    className="block rounded-md border border-[var(--color-border-secondary)] px-4 py-2.5 transition hover:border-[var(--color-border-strong)] hover:bg-[var(--color-surface-hover)]"
+                    className="group block border border-[var(--color-border-secondary)] bg-[var(--color-surface-subtle)] px-4 py-3 transition-all hover:border-[var(--color-accent)]/50 hover:bg-[var(--color-surface-hover)]"
                   >
                     <div className="flex items-start justify-between gap-4">
                       <div>
-                        <p className="text-sm font-semibold text-[var(--color-text-primary)]">
+                        <p className="text-xs font-bold uppercase tracking-wider text-[var(--color-text-primary)]">
                           {assessment.finding_kind}
                         </p>
-                        <p className="mt-1 text-sm leading-6 text-[var(--color-text-secondary)]">
+                        <p className="mt-2 text-xs leading-relaxed text-[var(--color-text-secondary)] group-hover:text-[var(--color-text-primary)] transition-colors">
                           {assessment.message}
                         </p>
                       </div>
-                      <div className="text-right text-xs uppercase tracking-[0.18em] text-[var(--color-text-tertiary)]">
-                        <p>{assessment.severity}</p>
-                        <p className="mt-2 font-mono normal-case text-[var(--color-text-secondary)]">
-                          {assessment.risk_score}
+                      <div className="text-right">
+                        <p className="text-[0.6rem] font-bold uppercase tracking-[0.2em] text-[var(--color-text-tertiary)]">
+                          RISK {assessment.risk_score}
+                        </p>
+                        <p className="mt-2 font-mono text-[0.65rem] text-[var(--color-text-tertiary)] uppercase">
+                          {assessment.severity}
                         </p>
                       </div>
                     </div>
@@ -267,26 +389,27 @@ export function LiveSpectrumPage() {
             className={highlightedOccupancy ? "ring-1 ring-[var(--color-accent)]" : undefined}
           >
             {occupancyHotspots.length > 0 ? (
-              <div className="space-y-3">
+              <div className="space-y-4">
                 {occupancyHotspots.map((bin) => (
                   <div key={bin.frequency_hz} className="space-y-2">
-                    <div className="flex items-center justify-between gap-3 text-sm">
+                    <div className="flex items-center justify-between gap-3 text-[0.65rem] font-bold uppercase tracking-wider">
                       <span className="font-mono text-[var(--color-text-primary)]">
                         {formatFrequency(bin.frequency_hz)}
                       </span>
-                      <span className="text-[var(--color-text-secondary)]">
-                        recent {bin.recent_activity_percentage.toFixed(1)}%
+                      <span className="text-[var(--color-accent)]">
+                        {bin.recent_activity_percentage.toFixed(1)}% ACT
                       </span>
                     </div>
-                    <div className="h-2 overflow-hidden rounded-full bg-[var(--color-surface-subtle)]">
+                    <div className="relative h-1.5 w-full overflow-hidden rounded-full bg-[var(--color-surface-strong)]">
                       <div
-                        className="h-full rounded-full bg-[var(--color-accent)]"
+                        className="absolute inset-y-0 left-0 rounded-full bg-[var(--color-accent)] shadow-[0_0_8px_var(--color-accent)]"
                         style={{ width: `${Math.min(bin.recent_activity_percentage, 100)}%` }}
                       />
                     </div>
-                    <p className="text-xs uppercase tracking-[0.18em] text-[var(--color-text-tertiary)]">
-                      baseline {bin.activity_percentage.toFixed(1)}% / {bin.average_power.toFixed(1)} dB
-                    </p>
+                    <div className="flex justify-between text-[0.6rem] font-medium text-[var(--color-text-tertiary)]">
+                      <span>BASE {bin.activity_percentage.toFixed(1)}%</span>
+                      <span>PWR {bin.average_power.toFixed(1)} dB</span>
+                    </div>
                   </div>
                 ))}
               </div>
@@ -299,8 +422,12 @@ export function LiveSpectrumPage() {
             )}
           </Panel>
 
-          <Panel title="Device Context" eyebrow="Current session">
-            <dl className="grid gap-3 sm:grid-cols-2">
+          <Panel
+            title="Device Context"
+            eyebrow="Current session"
+            className={highlightedDevice ? "ring-1 ring-[var(--color-accent)]" : undefined}
+          >
+            <dl className="grid gap-2 sm:grid-cols-2">
               <ContextFact label="Capture" value={telemetry.health?.state ?? "unknown"} />
               <ContextFact
                 label="Recording"
@@ -322,15 +449,65 @@ export function LiveSpectrumPage() {
   );
 }
 
+function ControlPill({
+  active,
+  children,
+  onClick,
+}: {
+  active: boolean;
+  children: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={[
+        "rounded-full border px-3 py-2 text-xs font-semibold uppercase tracking-[0.18em] transition",
+        active
+          ? "border-[var(--color-accent)] bg-[var(--color-accent-soft)] text-[var(--color-accent)]"
+          : "border-[var(--color-border-secondary)] bg-[var(--color-surface-subtle)] text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-hover)] hover:text-[var(--color-text-primary)]",
+      ].join(" ")}
+    >
+      {children}
+    </button>
+  );
+}
+
+function SectionLink({
+  href,
+  active,
+  children,
+}: {
+  href: string;
+  active: boolean;
+  children: string;
+}) {
+  return (
+    <Link
+      href={href}
+      className={[
+        "rounded-full border px-3 py-2 text-xs font-semibold uppercase tracking-[0.18em] transition",
+        active
+          ? "border-[var(--color-accent)] bg-[var(--color-accent-soft)] text-[var(--color-accent)]"
+          : "border-[var(--color-border-secondary)] bg-[var(--color-surface-subtle)] text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-hover)] hover:text-[var(--color-text-primary)]",
+      ].join(" ")}
+    >
+      {children}
+    </Link>
+  );
+}
+
 function ContextFact({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-md border border-[var(--color-border-secondary)] bg-[var(--color-surface-subtle)] px-4 py-2.5">
-      <dt className="text-[0.62rem] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
+    <div className="border border-[var(--color-border-secondary)] bg-[var(--color-surface-subtle)] px-4 py-3">
+      <dt className="text-[0.6rem] font-bold uppercase tracking-[0.15em] text-[var(--color-text-tertiary)]">
         {label}
       </dt>
-      <dd className="mt-1 font-mono text-sm text-[var(--color-text-primary)]">
+      <dd className="mt-1 font-mono text-xs text-[var(--color-text-primary)] uppercase">
         {value}
       </dd>
     </div>
   );
 }
+

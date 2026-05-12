@@ -24,12 +24,19 @@ export function StatusChip({
   return (
     <div
       className={[
-        "inline-flex items-center gap-2 rounded-md border px-2 py-1 text-xs uppercase tracking-[0.1em]",
+        "inline-flex items-center gap-2.5 rounded-sm border px-2.5 py-1 text-[0.6rem] font-bold uppercase tracking-[0.1em] transition-all duration-300",
         toneClasses[tone],
       ].join(" ")}
     >
-      <span className="text-[var(--color-text-tertiary)]">{label}</span>
-      <span className="font-mono text-[var(--color-text-primary)]">{value}</span>
+      <div className="flex items-center gap-2">
+        <span className="text-[var(--color-text-tertiary)] font-medium">{label}</span>
+        <div className="h-2.5 w-[1px] bg-current opacity-20" />
+        <span className="font-mono text-[var(--color-text-primary)]">{value}</span>
+      </div>
+      <div className={["h-1.5 w-1.5 rounded-full shadow-[0_0_4px_currentColor]", 
+        tone === "neutral" ? "bg-muted" : "bg-current"
+      ].join(" ")} />
     </div>
   );
 }
+

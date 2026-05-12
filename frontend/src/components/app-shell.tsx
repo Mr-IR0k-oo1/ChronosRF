@@ -1,29 +1,28 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useSearchParams } from "next/navigation";
 import { useMemo } from "react";
 
 import { StateBanner } from "@/components/state-banner";
 import { StatusChip } from "@/components/status-chip";
 import { useTelemetry } from "@/hooks/use-telemetry";
-import {
-  formatCaptureMode,
-  formatConnectionState,
-  formatRelativeAge,
-} from "@/services/format";
+import { formatConnectionState } from "@/services/format";
 import { getOperationalState } from "@/services/telemetry-view";
 
 const navigation = [
   { href: "/", label: "Command Center" },
+  { href: "/occupancy", label: "Occupancy" },
   { href: "/threats", label: "Investigations" },
   { href: "/device", label: "Capture Ops" },
 ];
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
+  const searchParams = useSearchParams();
   const telemetry = useTelemetry();
   const operational = useMemo(() => getOperationalState(telemetry), [telemetry]);
+  const isFocusView = searchParams.get("view") === "focus";
 
   const banner = operational.isPlaybackActive
     ? {
@@ -54,15 +53,28 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
   return (
     <div className="app-backdrop min-h-screen text-[var(--color-foreground)]">
-      <div className="mx-auto flex min-h-screen w-full max-w-[1600px] flex-col px-4 pb-8 pt-4 sm:px-6 lg:px-8">
-        <header className="sticky top-4 z-20">
-          <div className="orbit-card bg-[var(--color-surface-strong)] px-5 py-3">
+      <div
+        className={[
+          "mx-auto flex min-h-screen w-full flex-col px-4 pb-8 pt-6 sm:px-6 lg:px-8",
+          isFocusView ? "max-w-[1840px]" : "max-w-[1600px]",
+        ].join(" ")}
+      >
+        <header className="sticky top-6 z-20">
+          <div className="orbit-card bg-[var(--color-surface-strong)]/80 backdrop-blur-md px-6 py-3 shadow-2xl">
             <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
-              <div className="flex items-center gap-4">
-                <h1 className="text-lg font-bold tracking-tight text-[var(--color-text-primary)]">
-                  SpectraGuard
-                </h1>
-                <nav className="flex items-center gap-1 border-l border-[var(--color-border-secondary)] ml-2 pl-4">
+              <div className="flex items-center gap-6">
+                <div className="flex items-center gap-2">
+                  <div className="h-5 w-1 bg-[var(--color-accent)] rounded-full shadow-[0_0_8px_var(--color-accent)]" />
+                  <div>
+                    <h1 className="text-sm font-bold tracking-[0.2em] uppercase text-[var(--color-text-primary)]">
+                      ChronosRF
+                    </h1>
+                    <p className="mt-1 text-[0.56rem] font-semibold uppercase tracking-[0.24em] text-[var(--color-text-tertiary)]">
+                      RF operations console
+                    </p>
+                  </div>
+                </div>
+                <nav className="flex items-center gap-1 border-l border-[var(--color-border-secondary)] ml-2 pl-6">
                   {navigation.map((item) => {
                     const active = pathname === item.href;
                     return (
@@ -70,26 +82,35 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                         key={item.href}
                         href={item.href}
                         className={[
-                          "rounded-md px-3 py-1.5 text-sm font-medium transition-colors",
+                          "relative rounded-sm px-4 py-2 text-[0.7rem] font-bold uppercase tracking-[0.12em] transition-all duration-200",
                           active
-                            ? "bg-[var(--color-accent)] text-white"
-                            : "text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]",
+                            ? "text-[var(--color-accent)]"
+                            : "text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-surface-hover)]",
                         ].join(" ")}
                       >
                         {item.label}
+                        {active && (
+                          <span className="absolute bottom-0 left-0 h-0.5 w-full bg-[var(--color-accent)] shadow-[0_0_8px_var(--color-accent)]" />
+                        )}
                       </Link>
                     );
                   })}
                 </nav>
               </div>
-              <div className="flex flex-wrap gap-2">
+              <div className="flex flex-wrap gap-3 items-center">
+                {isFocusView ? (
+                  <span className="rounded-full border border-[var(--color-accent)]/25 bg-[var(--color-accent)]/10 px-3 py-1 text-[0.6rem] font-bold uppercase tracking-[0.18em] text-[var(--color-accent)]">
+                    Focus view
+                  </span>
+                ) : null}
+                <div className="h-4 w-[1px] bg-[var(--color-border-secondary)] mx-2 hidden md:block" />
                 <StatusChip
-                  label="WS"
+                  label="Network"
                   value={formatConnectionState(telemetry.connectionState)}
                   tone={connectionTone(telemetry.connectionState)}
                 />
                 <StatusChip
-                  label="CAP"
+                  label="Capture"
                   value={telemetry.health?.state ?? "unknown"}
                   tone={captureTone(telemetry.health?.state ?? "degraded")}
                 />
@@ -97,7 +118,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             </div>
           </div>
           {banner ? (
-            <div className="mt-2">
+            <div className="mt-3">
               <StateBanner
                 tone={banner.tone}
                 title={banner.title}
@@ -108,22 +129,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           ) : null}
         </header>
 
-        <main className="mt-4 flex-1">{children}</main>
+        <main className="mt-8 flex-1">{children}</main>
       </div>
     </div>
   );
 }
 
-function QuickLink({ href, label }: { href: string; label: string }) {
-  return (
-    <Link
-      href={href}
-      className="rounded-full border border-[var(--color-border-secondary)] bg-[var(--color-surface-subtle)] px-3 py-2 text-xs font-semibold uppercase tracking-[0.18em] text-[var(--color-text-secondary)] transition hover:bg-[var(--color-surface-hover)] hover:text-[var(--color-text-primary)]"
-    >
-      {label}
-    </Link>
-  );
-}
 
 function connectionTone(
   state: string,
