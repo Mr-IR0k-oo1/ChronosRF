@@ -5,6 +5,7 @@ pub mod peak_detector;
 
 use crate::config::Config;
 use crate::igor::IgorEngine;
+use crate::native::{NativeRuntimeConfig, PeakAnalysisBackend};
 use crate::models::{
     AlertEvent, AnomalyEvent, IgorAssessment, OccupancySnapshot, SignalPeak, SweepData,
 };
@@ -12,7 +13,6 @@ use crate::models::{
 use self::alert_engine::AlertEngine;
 use self::anomaly_detector::AnomalyDetector;
 use self::occupancy_tracker::OccupancyTracker;
-use self::peak_detector::PeakDetector;
 
 pub struct DetectionOutput {
     pub peaks: Vec<SignalPeak>,
@@ -22,7 +22,7 @@ pub struct DetectionOutput {
 }
 
 pub struct DetectionEngine {
-    peak_detector: PeakDetector,
+    peak_analyzer: PeakAnalysisBackend,
     occupancy_tracker: OccupancyTracker,
     anomaly_detector: AnomalyDetector,
     alert_engine: AlertEngine,
@@ -31,8 +31,9 @@ pub struct DetectionEngine {
 
 impl DetectionEngine {
     pub fn new(config: &Config) -> Self {
+        let native_runtime = NativeRuntimeConfig::from_config(config);
         Self {
-            peak_detector: PeakDetector::new(config.peak_threshold_db),
+            peak_analyzer: PeakAnalysisBackend::new(config.peak_threshold_db, native_runtime),
             occupancy_tracker: OccupancyTracker::new(
                 config.peak_threshold_db,
                 config.occupancy_window_seconds,
@@ -58,7 +59,7 @@ impl DetectionEngine {
 
     pub fn process_sweep(&mut self, sweep: &SweepData) -> DetectionOutput {
         self.occupancy_tracker.update(sweep);
-        let peaks = self.peak_detector.detect(sweep);
+        let peaks = self.peak_analyzer.detect_peaks(sweep);
         let anomalies = self
             .anomaly_detector
             .detect(sweep, &peaks, &mut self.occupancy_tracker);

@@ -9,7 +9,7 @@ use attack_simulator::{AttackScenario, build_plan, emit_plan};
 #[derive(Parser)]
 #[command(name = "rf_attack_sim")]
 #[command(
-    about = "Synthetic HackRF sweep emitter for validating SpectraGuard against simulated RF attacks."
+    about = "Synthetic HackRF sweep emitter for validating ChronosRF against simulated RF attacks."
 )]
 struct Cli {
     #[arg(short = 'f', default_value = "2400:2500")]

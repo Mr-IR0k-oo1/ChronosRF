@@ -3,7 +3,9 @@ use tokio::sync::broadcast::error::RecvError;
 
 use crate::core::event_bus::EventBus;
 use crate::models::{Event, SignalPeak, SweepData};
+use crate::native::{NativeRuntimeConfig, PeakAnalysisBackend};
 
+#[derive(Debug)]
 pub struct PeakDetector {
     threshold_db: f32,
 }
@@ -68,25 +70,29 @@ impl PeakDetector {
 }
 
 pub struct PeakDetectorWorker {
-    detector: PeakDetector,
+    analysis_backend: PeakAnalysisBackend,
     event_bus: EventBus,
 }
 
 impl PeakDetectorWorker {
-    pub fn new(threshold_db: f32, event_bus: EventBus) -> Self {
+    pub fn new(
+        threshold_db: f32,
+        native_runtime: NativeRuntimeConfig,
+        event_bus: EventBus,
+    ) -> Self {
         Self {
-            detector: PeakDetector::new(threshold_db),
+            analysis_backend: PeakAnalysisBackend::new(threshold_db, native_runtime),
             event_bus,
         }
     }
 
-    pub async fn run(self) -> Result<()> {
+    pub async fn run(mut self) -> Result<()> {
         let mut receiver = self.event_bus.subscribe();
 
         loop {
             match receiver.recv().await {
                 Ok(Event::SweepData(sweep)) => {
-                    for peak in self.detector.detect(&sweep) {
+                    for peak in self.analysis_backend.detect_peaks(&sweep) {
                         self.event_bus.publish(Event::SignalPeak(peak))?;
                     }
                 }

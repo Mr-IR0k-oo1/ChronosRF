@@ -6,6 +6,7 @@ mod detection;
 mod igor;
 mod ml;
 mod models;
+mod native;
 mod recording;
 mod sdr;
 mod simulation_validator;
@@ -31,8 +32,8 @@ use crate::state::ServiceState;
 use crate::websocket::server;
 
 #[derive(Parser)]
-#[command(name = "spectraguard")]
-#[command(about = "RF monitoring and threat detection platform for HackRF and playback telemetry.")]
+#[command(name = "chronosrf")]
+#[command(about = "ChronosRF, an RF monitoring and threat detection platform for HackRF and playback telemetry.")]
 struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
@@ -112,7 +113,7 @@ async fn main() -> Result<()> {
 }
 
 async fn run_server(config: Arc<Config>, started_at_ms: u64) -> Result<()> {
-    logger::info("Starting SpectraGuard backend.");
+    logger::info("Starting ChronosRF backend.");
     std::fs::create_dir_all(&config.recordings_dir)?;
     std::fs::create_dir_all(&config.datasets_dir)?;
     std::fs::create_dir_all("logs")?;
@@ -158,7 +159,7 @@ async fn run_server(config: Arc<Config>, started_at_ms: u64) -> Result<()> {
 }
 
 async fn run_tui(config: Arc<Config>, started_at_ms: u64) -> Result<()> {
-    logger::info("Starting SpectraGuard TUI.");
+    logger::info("Starting ChronosRF TUI.");
     std::fs::create_dir_all(&config.recordings_dir)?;
     std::fs::create_dir_all(&config.datasets_dir)?;
     std::fs::create_dir_all("logs")?;

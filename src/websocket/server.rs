@@ -36,7 +36,7 @@ pub async fn run(bind_addr: SocketAddr, app_state: AppState) -> Result<()> {
     let app = build_router(app_state);
 
     logger::info(&format!(
-        "SpectraGuard HTTP/WebSocket server listening on {bind_addr}."
+        "ChronosRF HTTP/WebSocket server listening on {bind_addr}."
     ));
     axum::serve(listener, app).await?;
     Ok(())
@@ -69,7 +69,7 @@ pub fn build_router(app_state: AppState) -> Router {
 }
 
 async fn root() -> &'static str {
-    "SpectraGuard backend is running."
+    "ChronosRF backend is running."
 }
 
 async fn get_health(State(app_state): State<AppState>) -> Json<crate::models::HealthStatus> {
@@ -336,6 +336,31 @@ mod tests {
                 .expect("test server should run");
         });
         (format!("ws://{addr}/ws"), server)
+    }
+
+    #[tokio::test]
+    async fn root_endpoint_returns_chronosrf_banner() {
+        let app_state = test_state().await;
+        let response = build_router(app_state)
+            .oneshot(
+                Request::builder()
+                    .uri("/")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response
+            .into_body()
+            .collect()
+            .await
+            .expect("body should read")
+            .to_bytes();
+        let text = String::from_utf8(body.to_vec()).expect("body should be utf8");
+
+        assert_eq!(text, "ChronosRF backend is running.");
     }
 
     #[tokio::test]

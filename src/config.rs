@@ -70,6 +70,9 @@ pub struct Config {
     pub repeated_pulse_window: Duration,
     pub repeated_pulse_min_count: usize,
     pub sustained_critical_period: Duration,
+    pub native_dsp_enabled: bool,
+    pub native_fft_enabled: bool,
+    pub python_ml_enabled: bool,
     pub igor_correlation_window: Duration,
     pub igor_min_peak_count: usize,
     pub igor_persistence_window: Duration,
@@ -109,6 +112,9 @@ impl Config {
             read_env("SPECTRAGUARD_REPEATED_PULSE_WINDOW_SECONDS", "10")?;
         let repeated_pulse_min_count = read_env("SPECTRAGUARD_REPEATED_PULSE_MIN_COUNT", "3")?;
         let sustained_critical_seconds = read_env("SPECTRAGUARD_SUSTAINED_CRITICAL_SECONDS", "30")?;
+        let native_dsp_enabled = read_toggle("SPECTRAGUARD_NATIVE_DSP_ENABLED", false)?;
+        let native_fft_enabled = read_toggle("SPECTRAGUARD_NATIVE_FFT_ENABLED", false)?;
+        let python_ml_enabled = read_toggle("SPECTRAGUARD_PYTHON_ML_ENABLED", false)?;
         let igor_correlation_window_seconds =
             read_env("SPECTRAGUARD_IGOR_CORRELATION_WINDOW_SECONDS", "30")?;
         let igor_min_peak_count = read_env("SPECTRAGUARD_IGOR_MIN_PEAK_COUNT", "3")?;
@@ -210,6 +216,9 @@ impl Config {
             repeated_pulse_window: Duration::from_secs(repeated_pulse_window_seconds),
             repeated_pulse_min_count,
             sustained_critical_period: Duration::from_secs(sustained_critical_seconds),
+            native_dsp_enabled,
+            native_fft_enabled,
+            python_ml_enabled,
             igor_correlation_window: Duration::from_secs(igor_correlation_window_seconds),
             igor_min_peak_count,
             igor_persistence_window: Duration::from_secs(igor_persistence_window_seconds),

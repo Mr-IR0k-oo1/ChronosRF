@@ -19,6 +19,7 @@ use crate::models::{
     CaptureMode, Event, HealthStatus, PlaybackStatus, RecordingStatus, StatusMetrics,
     SystemStatus, TelemetryEvent,
 };
+use crate::native::NativeRuntimeConfig;
 use crate::recording::playback::PlaybackSession;
 use crate::recording::recorder::Recorder;
 use crate::sdr::parser::{SweepParser, parse_sweep_line};
@@ -399,8 +400,12 @@ impl DeviceManager {
     fn spawn_detection_workers(&self) {
         let peak_bus = self.event_bus.clone();
         let peak_threshold = self.config.peak_threshold_db;
+        let peak_runtime = NativeRuntimeConfig::from_config(self.config.as_ref());
         tokio::spawn(async move {
-            if let Err(error) = PeakDetectorWorker::new(peak_threshold, peak_bus).run().await {
+            if let Err(error) = PeakDetectorWorker::new(peak_threshold, peak_runtime, peak_bus)
+                .run()
+                .await
+            {
                 logger::error(&format!("Peak detector worker exited unexpectedly: {error:#}"));
             }
         });
@@ -967,6 +972,9 @@ mod tests {
             repeated_pulse_window: Duration::from_secs(10),
             repeated_pulse_min_count: 3,
             sustained_critical_period: Duration::from_secs(30),
+            native_dsp_enabled: false,
+            native_fft_enabled: false,
+            python_ml_enabled: false,
             igor_correlation_window: Duration::from_secs(30),
             igor_min_peak_count: 3,
             igor_persistence_window: Duration::from_secs(15),

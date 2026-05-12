@@ -4,6 +4,11 @@ version = "0.1.0"
 edition = "2024"
 default-run = "spectraguard"
 
+[features]
+default = []
+native-dsp = []
+python-ml = []
+
 [dependencies]
 anyhow = "1.0"
 axum = { version = "0.8", features = ["json", "macros", "ws"] }
@@ -11,6 +16,7 @@ chrono = { version = "0.4", features = ["clock", "serde"] }
 clap = { version = "4.5", features = ["derive"] }
 crossterm = "0.29"
 csv = "1.4"
+libc = "0.2"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 smartcore = "0.4.5"
@@ -19,6 +25,9 @@ tokio = { version = "1.48", features = ["fs", "macros", "rt-multi-thread", "proc
 tower = { version = "0.5", features = ["util"] }
 tower-http = { version = "0.6", features = ["cors"] }
 uuid = { version = "1.18", features = ["serde", "v4"] }
+
+[build-dependencies]
+bindgen = "0.69"
 
 [dev-dependencies]
 futures-util = "0.3"
