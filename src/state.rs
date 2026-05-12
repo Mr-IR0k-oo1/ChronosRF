@@ -5,16 +5,18 @@ use std::sync::Arc;
 use tokio::sync::{RwLock, broadcast, mpsc, oneshot};
 
 use crate::config::Config;
+use crate::core::event_bus::EventBus;
 use crate::core::errors::Result;
 use crate::models::{
-    AlertEvent, CaptureMode, HealthStatus, IgorAssessment, OccupancySnapshot, PlaybackStatus,
-    RecordingStatus, StatusConfigSnapshot, SystemStatus, TelemetryEvent,
+    AlertEvent, CaptureMode, Event, HealthStatus, IgorAssessment, OccupancySnapshot,
+    PlaybackStatus, RecordingStatus, StatusConfigSnapshot, SystemStatus, TelemetryEvent,
 };
 
 pub type AppState = Arc<ServiceState>;
 
 pub struct ServiceState {
     pub config: Arc<Config>,
+    event_bus: EventBus,
     pub telemetry_tx: broadcast::Sender<TelemetryEvent>,
     pub control_tx: mpsc::Sender<ControlCommand>,
     snapshots: RwLock<SnapshotStore>,
@@ -56,6 +58,7 @@ pub struct TelemetryHub {
 impl ServiceState {
     pub fn new(
         config: Arc<Config>,
+        event_bus: EventBus,
         telemetry_tx: broadcast::Sender<TelemetryEvent>,
         control_tx: mpsc::Sender<ControlCommand>,
         started_at_ms: u64,
@@ -82,8 +85,9 @@ impl ServiceState {
             current_playback: playback_status.clone(),
         };
 
-        Arc::new(Self {
+        let state = Arc::new(Self {
             config,
+            event_bus,
             telemetry_tx,
             control_tx,
             snapshots: RwLock::new(SnapshotStore {
@@ -95,7 +99,10 @@ impl ServiceState {
                 recording_status,
                 playback_status,
             }),
-        })
+        });
+
+        state.spawn_projection_task();
+        state
     }
 
     pub fn telemetry_hub(self: &AppState) -> TelemetryHub {
@@ -104,28 +111,50 @@ impl ServiceState {
         }
     }
 
+    pub fn event_bus(self: &AppState) -> EventBus {
+        self.event_bus.clone()
+    }
+
     pub async fn snapshots(&self) -> SnapshotStore {
         self.snapshots.read().await.clone()
     }
-}
 
-impl TelemetryHub {
-    pub async fn publish(&self, event: TelemetryEvent) {
+    fn spawn_projection_task(self: &AppState) {
+        let state = Arc::clone(self);
+        let mut receiver = state.event_bus.subscribe();
+
+        tokio::spawn(async move {
+            loop {
+                match receiver.recv().await {
+                    Ok(event) => state.project_event(event).await,
+                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        });
+    }
+
+    async fn project_event(&self, event: Event) {
+        self.publish_telemetry_internal(TelemetryEvent::from(event))
+            .await;
+    }
+
+    async fn publish_telemetry_internal(&self, event: TelemetryEvent) {
         {
-            let mut snapshots = self.state.snapshots.write().await;
+            let mut snapshots = self.snapshots.write().await;
             match &event {
                 TelemetryEvent::Health(health) => snapshots.health = health.clone(),
                 TelemetryEvent::Status(status) => snapshots.status = status.clone(),
                 TelemetryEvent::Occupancy(occupancy) => snapshots.occupancy = occupancy.clone(),
                 TelemetryEvent::Alert(alert) => {
                     snapshots.alerts.push_back(alert.clone());
-                    while snapshots.alerts.len() > self.state.config.alert_buffer_size {
+                    while snapshots.alerts.len() > self.config.alert_buffer_size {
                         snapshots.alerts.pop_front();
                     }
                 }
                 TelemetryEvent::IgorAssessment(assessment) => {
                     snapshots.igor_assessments.push_back(assessment.clone());
-                    while snapshots.igor_assessments.len() > self.state.config.igor_buffer_size {
+                    while snapshots.igor_assessments.len() > self.config.igor_buffer_size {
                         snapshots.igor_assessments.pop_front();
                     }
                 }
@@ -145,7 +174,13 @@ impl TelemetryHub {
             }
         }
 
-        let _ = self.state.telemetry_tx.send(event);
+        let _ = self.telemetry_tx.send(event);
+    }
+}
+
+impl TelemetryHub {
+    pub async fn publish(&self, event: TelemetryEvent) {
+        self.state.publish_telemetry_internal(event).await;
     }
 }
 
@@ -156,6 +191,7 @@ mod tests {
     use tokio::sync::{broadcast, mpsc};
 
     use crate::config::Config;
+    use crate::core::event_bus::EventBus;
     use crate::models::{
         AlertSeverity, AnomalyType, IgorAssessment, IgorFindingKind, TelemetryEvent,
     };
@@ -167,9 +203,10 @@ mod tests {
         let mut config = Config::from_env().expect("config should load");
         config.igor_buffer_size = 1;
         let config = Arc::new(config);
+        let event_bus = EventBus::new(8);
         let (telemetry_tx, _) = broadcast::channel(8);
         let (control_tx, _control_rx) = mpsc::channel(1);
-        let state = ServiceState::new(config, telemetry_tx, control_tx, 1);
+        let state = ServiceState::new(config, event_bus, telemetry_tx, control_tx, 1);
         let hub = state.telemetry_hub();
 
         hub.publish(TelemetryEvent::IgorAssessment(IgorAssessment {

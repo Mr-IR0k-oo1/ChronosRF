@@ -10,6 +10,7 @@ mod recording;
 mod sdr;
 mod simulation_validator;
 mod state;
+mod ui;
 mod websocket;
 
 use std::path::PathBuf;
@@ -21,6 +22,7 @@ use clap::{Parser, Subcommand};
 use tokio::sync::{broadcast, mpsc};
 
 use crate::config::Config;
+use crate::core::event_bus::EventBus;
 use crate::core::errors::Result;
 use crate::core::logger;
 use crate::models::TelemetryEvent;
@@ -39,6 +41,7 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     Serve,
+    Tui,
     ValidateHardware,
     ValidateSweep {
         #[arg(long, default_value_t = 60)]
@@ -76,6 +79,7 @@ async fn main() -> Result<()> {
 
     match cli.command.unwrap_or(Commands::Serve) {
         Commands::Serve => run_server(config, started_at_ms).await,
+        Commands::Tui => run_tui(config, started_at_ms).await,
         Commands::ValidateHardware => validate_hardware(config, started_at_ms).await,
         Commands::ValidateSweep { duration_seconds } => {
             validate_sweep(config, started_at_ms, duration_seconds).await
@@ -113,12 +117,19 @@ async fn run_server(config: Arc<Config>, started_at_ms: u64) -> Result<()> {
     std::fs::create_dir_all(&config.datasets_dir)?;
     std::fs::create_dir_all("logs")?;
 
+    let event_bus = EventBus::new(4096);
     let (telemetry_tx, _) = broadcast::channel::<TelemetryEvent>(4096);
     let (control_tx, control_rx) = mpsc::channel(32);
-    let app_state = ServiceState::new(config.clone(), telemetry_tx, control_tx, started_at_ms);
+    let app_state = ServiceState::new(
+        config.clone(),
+        event_bus.clone(),
+        telemetry_tx,
+        control_tx,
+        started_at_ms,
+    );
     let telemetry_hub = app_state.telemetry_hub();
 
-    let manager = DeviceManager::new(config, telemetry_hub, control_rx, started_at_ms);
+    let manager = DeviceManager::new(config, event_bus, telemetry_hub, control_rx, started_at_ms);
     let manager_handle = tokio::spawn(async move {
         if let Err(error) = manager.run().await {
             logger::error(&format!("Device manager exited unexpectedly: {error:#}"));
@@ -146,11 +157,58 @@ async fn run_server(config: Arc<Config>, started_at_ms: u64) -> Result<()> {
     server_result
 }
 
+async fn run_tui(config: Arc<Config>, started_at_ms: u64) -> Result<()> {
+    logger::info("Starting SpectraGuard TUI.");
+    std::fs::create_dir_all(&config.recordings_dir)?;
+    std::fs::create_dir_all(&config.datasets_dir)?;
+    std::fs::create_dir_all("logs")?;
+
+    let event_bus = EventBus::new(4096);
+    let (telemetry_tx, _) = broadcast::channel::<TelemetryEvent>(4096);
+    let (control_tx, control_rx) = mpsc::channel(32);
+    let app_state = ServiceState::new(
+        config.clone(),
+        event_bus.clone(),
+        telemetry_tx,
+        control_tx,
+        started_at_ms,
+    );
+    let telemetry_hub = app_state.telemetry_hub();
+
+    let manager = DeviceManager::new(config, event_bus, telemetry_hub, control_rx, started_at_ms);
+    let manager_handle = tokio::spawn(async move {
+        if let Err(error) = manager.run().await {
+            logger::error(&format!("Device manager exited unexpectedly: {error:#}"));
+        }
+    });
+
+    let tui = ui::UiRuntime::new(app_state.clone()).await?;
+    let tui_result = tui.run().await;
+
+    manager_handle.abort();
+    let _ = manager_handle.await;
+
+    tui_result
+}
+
 async fn validate_hardware(config: Arc<Config>, started_at_ms: u64) -> Result<()> {
+    let event_bus = EventBus::new(16);
     let (telemetry_tx, _) = broadcast::channel::<TelemetryEvent>(16);
     let (control_tx, control_rx) = mpsc::channel(1);
-    let app_state = ServiceState::new(config.clone(), telemetry_tx, control_tx, started_at_ms);
-    let manager = DeviceManager::new(config, app_state.telemetry_hub(), control_rx, started_at_ms);
+    let app_state = ServiceState::new(
+        config.clone(),
+        event_bus.clone(),
+        telemetry_tx,
+        control_tx,
+        started_at_ms,
+    );
+    let manager = DeviceManager::new(
+        config,
+        event_bus,
+        app_state.telemetry_hub(),
+        control_rx,
+        started_at_ms,
+    );
     let result = manager.validate_hardware().await?;
 
     if result.success {
@@ -170,10 +228,23 @@ async fn validate_sweep(
     started_at_ms: u64,
     duration_seconds: u64,
 ) -> Result<()> {
+    let event_bus = EventBus::new(16);
     let (telemetry_tx, _) = broadcast::channel::<TelemetryEvent>(16);
     let (control_tx, control_rx) = mpsc::channel(1);
-    let app_state = ServiceState::new(config.clone(), telemetry_tx, control_tx, started_at_ms);
-    let manager = DeviceManager::new(config, app_state.telemetry_hub(), control_rx, started_at_ms);
+    let app_state = ServiceState::new(
+        config.clone(),
+        event_bus.clone(),
+        telemetry_tx,
+        control_tx,
+        started_at_ms,
+    );
+    let manager = DeviceManager::new(
+        config,
+        event_bus,
+        app_state.telemetry_hub(),
+        control_rx,
+        started_at_ms,
+    );
     let result = manager.validate_sweep(duration_seconds).await?;
 
     println!(

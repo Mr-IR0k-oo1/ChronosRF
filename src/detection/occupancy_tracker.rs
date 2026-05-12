@@ -1,6 +1,12 @@
 use std::collections::{HashMap, VecDeque};
+use std::time::Duration;
 
-use crate::models::{OccupancySnapshot, OccupancyStats, SweepData};
+use anyhow::Result;
+use tokio::sync::broadcast::error::RecvError;
+use tokio::time::interval;
+
+use crate::core::{event_bus::EventBus, logger};
+use crate::models::{Event, OccupancySnapshot, OccupancyStats, OccupancyUpdate, SweepData};
 
 #[derive(Clone, Debug, Default)]
 struct OccupancyBucket {
@@ -66,6 +72,10 @@ impl OccupancyTracker {
     }
 
     pub fn snapshot(&mut self, generated_at_ms: u64) -> OccupancySnapshot {
+        self.snapshot_update(generated_at_ms).into()
+    }
+
+    pub fn snapshot_update(&mut self, generated_at_ms: u64) -> OccupancyUpdate {
         let current_second = generated_at_ms / 1000;
         self.prune_empty(current_second);
 
@@ -86,7 +96,7 @@ impl OccupancyTracker {
 
         bins.sort_by_key(|stats| stats.frequency_hz);
 
-        OccupancySnapshot {
+        OccupancyUpdate {
             generated_at_ms,
             window_seconds: self.window_seconds,
             bins,
@@ -141,6 +151,57 @@ impl OccupancyTracker {
             trim_history(history, current_second, self.window_seconds);
             !history.buckets.is_empty()
         });
+    }
+}
+
+pub struct OccupancyWorker {
+    tracker: OccupancyTracker,
+    event_bus: EventBus,
+    snapshot_interval: Duration,
+}
+
+impl OccupancyWorker {
+    pub fn new(
+        threshold_db: f32,
+        window_seconds: u64,
+        recent_window_seconds: u64,
+        snapshot_interval: Duration,
+        event_bus: EventBus,
+    ) -> Self {
+        Self {
+            tracker: OccupancyTracker::new(threshold_db, window_seconds, recent_window_seconds),
+            event_bus,
+            snapshot_interval,
+        }
+    }
+
+    pub async fn run(mut self) -> Result<()> {
+        let mut receiver = self.event_bus.subscribe();
+        let mut ticker = interval(self.snapshot_interval);
+        let mut has_data = false;
+
+        loop {
+            tokio::select! {
+                received = receiver.recv() => {
+                    match received {
+                        Ok(Event::SweepData(sweep)) => {
+                            self.tracker.update(&sweep);
+                            has_data = true;
+                        }
+                        Ok(_) | Err(RecvError::Lagged(_)) => {}
+                        Err(RecvError::Closed) => break,
+                    }
+                }
+                _ = ticker.tick() => {
+                    if has_data {
+                        let update = self.tracker.snapshot_update(logger::now_ms());
+                        self.event_bus.publish(Event::OccupancyUpdate(update))?;
+                    }
+                }
+            }
+        }
+
+        Ok(())
     }
 }
 

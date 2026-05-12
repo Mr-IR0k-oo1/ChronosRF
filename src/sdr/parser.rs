@@ -1,6 +1,66 @@
 use anyhow::{Context, Result, bail};
+use tokio::sync::mpsc;
 
-use crate::models::SweepData;
+use crate::core::{event_bus::EventBus, logger};
+use crate::models::{Event, SweepData};
+use crate::sdr::sweep_capture::CaptureMessage;
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SweepParseStats {
+    pub total_lines: u64,
+    pub parsed_lines: u64,
+    pub malformed_lines: u64,
+}
+
+#[derive(Clone, Debug)]
+pub struct SweepParser {
+    event_bus: EventBus,
+}
+
+impl SweepParser {
+    pub fn new(event_bus: EventBus) -> Self {
+        Self { event_bus }
+    }
+
+    pub async fn run(self, mut input_rx: mpsc::Receiver<CaptureMessage>) -> Result<SweepParseStats> {
+        let mut stats = SweepParseStats::default();
+        let mut sequence = 0u64;
+
+        while let Some(message) = input_rx.recv().await {
+            if let CaptureMessage::SweepLine(raw_line) = message {
+                stats.total_lines += 1;
+                sequence += 1;
+
+                match self.publish_line(&raw_line.line, sequence, raw_line.captured_at_ms)? {
+                    Some(_) => stats.parsed_lines += 1,
+                    None => stats.malformed_lines += 1,
+                }
+            }
+        }
+
+        Ok(stats)
+    }
+
+    pub fn publish_line(
+        &self,
+        line: &str,
+        sequence: u64,
+        captured_at_ms: u64,
+    ) -> Result<Option<SweepData>> {
+        match parse_sweep_line(line, sequence, captured_at_ms) {
+            Ok(sweep) => {
+                self.event_bus.publish(Event::SweepData(sweep.clone()))?;
+                Ok(Some(sweep))
+            }
+            Err(error) => {
+                logger::warn(&format!(
+                    "Skipping malformed sweep row: {error:#}. Raw line: {line}"
+                ));
+                Ok(None)
+            }
+        }
+    }
+}
 
 pub fn parse_sweep_line(line: &str, sequence: u64, captured_at_ms: u64) -> Result<SweepData> {
     let fields = line.split(',').map(str::trim).collect::<Vec<_>>();
@@ -65,7 +125,13 @@ pub fn parse_sweep_line(line: &str, sequence: u64, captured_at_ms: u64) -> Resul
 
 #[cfg(test)]
 mod tests {
-    use super::parse_sweep_line;
+    use tokio::sync::mpsc;
+
+    use crate::core::event_bus::EventBus;
+    use crate::models::Event;
+    use crate::sdr::sweep_capture::{CaptureMessage, RawSweepLine};
+
+    use super::{SweepParseStats, SweepParser, parse_sweep_line};
 
     #[test]
     fn parses_valid_sweep_line() {
@@ -164,5 +230,68 @@ mod tests {
         let sweep = parse_sweep_line(line, 1, 1).expect("line should parse");
 
         assert!(sweep.power_values.is_empty());
+    }
+
+    #[tokio::test]
+    async fn parser_publishes_canonical_sweep_events() {
+        let bus = EventBus::new(8);
+        let parser = SweepParser::new(bus.clone());
+        let mut receiver = bus.subscribe();
+        let (tx, rx) = mpsc::channel(4);
+
+        tx.send(CaptureMessage::SweepLine(RawSweepLine {
+            line: "2019-01-03, 11:57:34.967805, 2400000000, 2405000000, 1000000.00, 20, -64.72, -63.36".to_string(),
+            captured_at_ms: 123,
+        }))
+        .await
+        .expect("message should send");
+        drop(tx);
+
+        let stats = parser.run(rx).await.expect("parser should run");
+        let event = receiver.recv().await.expect("event should publish");
+
+        assert_eq!(
+            stats,
+            SweepParseStats {
+                total_lines: 1,
+                parsed_lines: 1,
+                malformed_lines: 0,
+            }
+        );
+        match event {
+            Event::SweepData(sweep) => {
+                assert_eq!(sweep.sequence, 1);
+                assert_eq!(sweep.captured_at_ms, 123);
+            }
+            other => panic!("expected sweep event, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn parser_counts_malformed_rows_without_publishing_events() {
+        let bus = EventBus::new(8);
+        let parser = SweepParser::new(bus.clone());
+        let mut receiver = bus.subscribe();
+        let (tx, rx) = mpsc::channel(4);
+
+        tx.send(CaptureMessage::SweepLine(RawSweepLine {
+            line: "malformed-row".to_string(),
+            captured_at_ms: 123,
+        }))
+        .await
+        .expect("message should send");
+        drop(tx);
+
+        let stats = parser.run(rx).await.expect("parser should run");
+
+        assert_eq!(
+            stats,
+            SweepParseStats {
+                total_lines: 1,
+                parsed_lines: 0,
+                malformed_lines: 1,
+            }
+        );
+        assert!(receiver.try_recv().is_err());
     }
 }

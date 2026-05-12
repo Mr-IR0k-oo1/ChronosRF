@@ -5,14 +5,15 @@ use std::sync::Arc;
 use anyhow::{Context, Result, anyhow};
 use tokio::io::{AsyncBufReadExt, BufReader, Lines};
 use tokio::process::{Child, ChildStderr, ChildStdout, Command};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, mpsc, watch};
 use tokio::task::JoinHandle;
 
 use crate::config::Config;
+use crate::core::logger;
 
 const STDERR_LINE_LIMIT: usize = 128;
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct CaptureExitStatus {
     pub success: bool,
     pub exit_code: Option<i32>,
@@ -25,6 +26,89 @@ impl CaptureExitStatus {
             None
         } else {
             Some(self.stderr_lines.join(" | "))
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct RawSweepLine {
+    pub line: String,
+    pub captured_at_ms: u64,
+}
+
+#[derive(Clone, Debug)]
+pub enum CaptureMessage {
+    CaptureStarted {
+        started_at_ms: u64,
+        command_path: String,
+    },
+    SweepLine(RawSweepLine),
+    CaptureStopped(CaptureExitStatus),
+    CaptureFailed {
+        failed_at_ms: u64,
+        error: String,
+    },
+}
+
+pub struct SweepCaptureEngine {
+    config: Arc<Config>,
+    output_tx: mpsc::Sender<CaptureMessage>,
+}
+
+impl SweepCaptureEngine {
+    pub fn new(config: Arc<Config>, output_tx: mpsc::Sender<CaptureMessage>) -> Self {
+        Self { config, output_tx }
+    }
+
+    pub async fn run(self, mut shutdown_rx: watch::Receiver<bool>) -> Result<CaptureExitStatus> {
+        let mut session = match CaptureSession::spawn(&self.config) {
+            Ok(session) => session,
+            Err(error) => {
+                let failed_at_ms = logger::now_ms();
+                let _ = self
+                    .output_tx
+                    .send(CaptureMessage::CaptureFailed {
+                        failed_at_ms,
+                        error: error.to_string(),
+                    })
+                    .await;
+                return Err(error);
+            }
+        };
+
+        let _ = self
+            .output_tx
+            .send(CaptureMessage::CaptureStarted {
+                started_at_ms: logger::now_ms(),
+                command_path: self.config.hackrf_sweep_path.clone(),
+            })
+            .await;
+
+        loop {
+            tokio::select! {
+                changed = shutdown_rx.changed() => {
+                    if changed.is_err() || *shutdown_rx.borrow() {
+                        let status = session.stop().await?;
+                        let _ = self.output_tx.send(CaptureMessage::CaptureStopped(status.clone())).await;
+                        return Ok(status);
+                    }
+                }
+                line_result = session.next_stdout_line() => {
+                    match line_result? {
+                        Some(line) => {
+                            let _ = self.output_tx.send(CaptureMessage::SweepLine(RawSweepLine {
+                                line,
+                                captured_at_ms: logger::now_ms(),
+                            })).await;
+                        }
+                        None => {
+                            let status = session.finish().await?;
+                            let _ = self.output_tx.send(CaptureMessage::CaptureStopped(status.clone())).await;
+                            return Ok(status);
+                        }
+                    }
+                }
+            }
         }
     }
 }

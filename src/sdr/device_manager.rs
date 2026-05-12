@@ -1,31 +1,56 @@
-use std::future::pending;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
 use tokio::process::Command;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
+use tokio::task::JoinHandle;
 use tokio::time::{Instant, interval};
 
 use crate::config::Config;
-use crate::core::logger;
-use crate::detection::{DetectionEngine, DetectionOutput};
+use crate::core::{event_bus::EventBus, logger};
+use crate::detection::{
+    DetectionOutput, alert_engine::AlertEngineWorker, occupancy_tracker::OccupancyWorker,
+    peak_detector::PeakDetectorWorker,
+};
+use crate::igor::IgorWorker;
 use crate::models::{
-    CaptureMode, HealthStatus, PlaybackStatus, RecordingStatus, StatusMetrics, SystemStatus,
-    TelemetryEvent,
+    CaptureMode, Event, HealthStatus, PlaybackStatus, RecordingStatus, StatusMetrics,
+    SystemStatus, TelemetryEvent,
 };
 use crate::recording::playback::PlaybackSession;
 use crate::recording::recorder::Recorder;
-use crate::sdr::parser::parse_sweep_line;
-use crate::sdr::sweep_capture::CaptureSession;
+use crate::sdr::parser::{SweepParser, parse_sweep_line};
+use crate::sdr::sweep_capture::{CaptureExitStatus, CaptureSession, SweepCaptureEngine};
 use crate::state::{ControlCommand, TelemetryHub};
 
 pub struct DeviceManager {
     config: Arc<Config>,
+    event_bus: EventBus,
     telemetry_hub: TelemetryHub,
     control_rx: mpsc::Receiver<ControlCommand>,
     started_at_ms: u64,
+}
+
+struct LiveRuntime {
+    shutdown_tx: watch::Sender<bool>,
+    capture_handle: JoinHandle<()>,
+    parser_handle: JoinHandle<()>,
+}
+
+struct PlaybackRuntime {
+    handle: JoinHandle<()>,
+}
+
+struct RecordingRuntime {
+    shutdown_tx: watch::Sender<bool>,
+    handle: JoinHandle<Result<RecordingStatus>>,
+}
+
+enum ManagerMessage {
+    CaptureEnded(std::result::Result<CaptureExitStatus, String>),
+    PlaybackEnded(std::result::Result<u64, String>),
 }
 
 pub struct HardwareValidationResult {
@@ -43,12 +68,14 @@ pub struct SweepValidationResult {
 impl DeviceManager {
     pub fn new(
         config: Arc<Config>,
+        event_bus: EventBus,
         telemetry_hub: TelemetryHub,
         control_rx: mpsc::Receiver<ControlCommand>,
         started_at_ms: u64,
     ) -> Self {
         Self {
             config,
+            event_bus,
             telemetry_hub,
             control_rx,
             started_at_ms,
@@ -56,15 +83,14 @@ impl DeviceManager {
     }
 
     pub async fn run(mut self) -> Result<()> {
-        let mut detection_engine = DetectionEngine::new(&self.config);
         let mut status_tick = interval(Duration::from_secs(1));
-        let mut occupancy_tick = interval(self.config.occupancy_snapshot_interval);
         let mut log_tick = interval(self.config.status_log_interval);
-        let mut live_session: Option<CaptureSession> = None;
-        let mut playback_session: Option<PlaybackSession> = None;
-        let mut recorder: Option<Recorder> = None;
+        let mut bus_rx = self.event_bus.subscribe();
+        let (manager_tx, mut manager_rx) = mpsc::channel(32);
+        let mut live_runtime: Option<LiveRuntime> = None;
+        let mut playback_runtime: Option<PlaybackRuntime> = None;
+        let mut recording_runtime: Option<RecordingRuntime> = None;
         let mut metrics = StatusMetrics::default();
-        let mut sequence = 0u64;
         let mut next_live_restart_at = Instant::now();
         let mut current_mode = CaptureMode::Live;
         let mut recording_status = RecordingStatus::default();
@@ -73,6 +99,8 @@ impl DeviceManager {
         let mut last_sweep_at_ms = None;
         let mut last_log_counts = StatusMetrics::default();
         let mut last_log_instant = Instant::now();
+
+        self.spawn_detection_workers();
 
         self.telemetry_hub
             .publish(TelemetryEvent::Health(HealthStatus::starting(
@@ -97,64 +125,44 @@ impl DeviceManager {
 
         loop {
             if current_mode == CaptureMode::Live
-                && live_session.is_none()
+                && live_runtime.is_none()
                 && Instant::now() >= next_live_restart_at
             {
-                match CaptureSession::spawn(&self.config) {
-                    Ok(session) => {
-                        live_session = Some(session);
-                        self.telemetry_hub
-                            .publish(TelemetryEvent::Health(HealthStatus::online(
-                                &self.config.hackrf_sweep_path,
-                                format!(
-                                    "Capturing {} MHz with {} Hz bins.",
-                                    self.config.freq_range_mhz, self.config.bin_width_hz
-                                ),
-                            )))
-                            .await;
-                        self.publish_status(
-                            current_mode,
-                            &metrics,
-                            &recording_status,
-                            &playback_status,
-                            last_sweep_sequence,
-                            last_sweep_at_ms,
-                        )
-                        .await;
-                        logger::info("HackRF sweep capture started.");
-                    }
-                    Err(error) => {
-                        metrics.reconnect_attempts += 1;
-                        let message = format!(
-                            "Unable to launch {}: {error:#}",
-                            self.config.hackrf_sweep_path
-                        );
-                        logger::warn(&message);
-                        self.telemetry_hub
-                            .publish(TelemetryEvent::Health(HealthStatus::degraded(
-                                &self.config.hackrf_sweep_path,
-                                &message,
-                                Some(error.to_string()),
-                            )))
-                            .await;
-                        next_live_restart_at = Instant::now() + self.config.restart_backoff;
-                    }
-                }
+                live_runtime = Some(self.spawn_live_runtime(manager_tx.clone()));
+                self.telemetry_hub
+                    .publish(TelemetryEvent::Health(HealthStatus::online(
+                        &self.config.hackrf_sweep_path,
+                        format!(
+                            "Capturing {} MHz with {} Hz bins.",
+                            self.config.freq_range_mhz, self.config.bin_width_hz
+                        ),
+                    )))
+                    .await;
+                self.publish_status(
+                    current_mode,
+                    &metrics,
+                    &recording_status,
+                    &playback_status,
+                    last_sweep_sequence,
+                    last_sweep_at_ms,
+                )
+                .await;
+                logger::info("HackRF sweep capture started.");
             }
 
             tokio::select! {
                 Some(command) = self.control_rx.recv() => {
                     match command {
                         ControlCommand::StartRecording { respond_to } => {
-                            let result = if playback_session.is_some() || current_mode == CaptureMode::Playback {
+                            let result = if playback_runtime.is_some() || current_mode == CaptureMode::Playback {
                                 Err(anyhow!("recording cannot start while playback is active"))
-                            } else if recorder.is_some() {
+                            } else if recording_runtime.is_some() {
                                 Ok(recording_status.clone())
                             } else {
                                 let started_at_ms = logger::now_ms();
-                                let new_recorder = Recorder::start(&self.config.recordings_dir, started_at_ms).await?;
-                                recording_status = new_recorder.status();
-                                recorder = Some(new_recorder);
+                                let (runtime, status) = self.start_recording_runtime(started_at_ms).await?;
+                                recording_status = status.clone();
+                                recording_runtime = Some(runtime);
                                 self.telemetry_hub
                                     .publish(TelemetryEvent::RecordingStatus(recording_status.clone()))
                                     .await;
@@ -171,8 +179,8 @@ impl DeviceManager {
                             let _ = respond_to.send(result);
                         }
                         ControlCommand::StopRecording { respond_to } => {
-                            let result = if let Some(existing) = recorder.take() {
-                                let mut stopped_status = existing.stop().await?;
+                            let result = if let Some(runtime) = recording_runtime.take() {
+                                let mut stopped_status = self.stop_recording_runtime(runtime).await?;
                                 stopped_status.active = false;
                                 recording_status = stopped_status.clone();
                                 self.telemetry_hub
@@ -193,138 +201,162 @@ impl DeviceManager {
                             let _ = respond_to.send(result);
                         }
                         ControlCommand::StartPlayback { file_path, speed, respond_to } => {
-                            let result = self
-                                .start_playback(
-                                    &mut live_session,
-                                    &mut playback_session,
-                                    &mut recorder,
-                                    &mut current_mode,
-                                    &mut playback_status,
-                                    &mut recording_status,
+                            let result = if playback_runtime.is_some() {
+                                Ok(playback_status.clone())
+                            } else {
+                                if let Some(runtime) = recording_runtime.take() {
+                                    let mut stopped_status = self.stop_recording_runtime(runtime).await?;
+                                    stopped_status.active = false;
+                                    recording_status = stopped_status.clone();
+                                    self.telemetry_hub
+                                        .publish(TelemetryEvent::RecordingStatus(recording_status.clone()))
+                                        .await;
+                                }
+
+                                if let Some(runtime) = live_runtime.take() {
+                                    self.stop_live_runtime(runtime).await;
+                                }
+
+                                let (runtime, status) =
+                                    self.start_playback_runtime(manager_tx.clone(), file_path, speed).await?;
+                                playback_status = status.clone();
+                                playback_runtime = Some(runtime);
+                                current_mode = CaptureMode::Playback;
+
+                                self.telemetry_hub
+                                    .publish(TelemetryEvent::Health(HealthStatus::degraded(
+                                        &self.config.hackrf_sweep_path,
+                                        "Live capture paused while playback is active.",
+                                        None,
+                                    )))
+                                    .await;
+                                self.telemetry_hub
+                                    .publish(TelemetryEvent::PlaybackStatus(playback_status.clone()))
+                                    .await;
+                                self.publish_status(
+                                    current_mode,
                                     &metrics,
+                                    &recording_status,
+                                    &playback_status,
                                     last_sweep_sequence,
                                     last_sweep_at_ms,
-                                    file_path,
-                                    speed,
                                 )
                                 .await;
+
+                                Ok(playback_status.clone())
+                            };
                             let _ = respond_to.send(result);
                         }
                         ControlCommand::StopPlayback { respond_to } => {
-                            let result = self
-                                .stop_playback(
-                                    &mut playback_session,
-                                    &mut current_mode,
-                                    &mut playback_status,
-                                    &recording_status,
+                            let result = if let Some(runtime) = playback_runtime.take() {
+                                self.stop_playback_runtime(runtime).await;
+                                playback_status.active = false;
+                                current_mode = CaptureMode::Live;
+                                self.telemetry_hub
+                                    .publish(TelemetryEvent::PlaybackStatus(playback_status.clone()))
+                                    .await;
+                                self.telemetry_hub
+                                    .publish(TelemetryEvent::Health(HealthStatus::starting(
+                                        &self.config.hackrf_sweep_path,
+                                    )))
+                                    .await;
+                                self.publish_status(
+                                    current_mode,
                                     &metrics,
+                                    &recording_status,
+                                    &playback_status,
                                     last_sweep_sequence,
                                     last_sweep_at_ms,
                                 )
                                 .await;
-                            if result.is_ok() {
                                 next_live_restart_at = Instant::now();
-                            }
+                                Ok(playback_status.clone())
+                            } else {
+                                Ok(playback_status.clone())
+                            };
                             let _ = respond_to.send(result);
                         }
                     }
                 }
-                line_result = async {
-                    match live_session.as_mut() {
-                        Some(session) => session.next_stdout_line().await,
-                        None => pending().await,
+                Some(message) = manager_rx.recv() => {
+                    match message {
+                        ManagerMessage::CaptureEnded(result) => {
+                            live_runtime = None;
+                            if current_mode == CaptureMode::Live {
+                                metrics.reconnect_attempts += 1;
+                                let message = self.capture_failure_message(result);
+                                logger::warn(&message);
+                                self.telemetry_hub
+                                    .publish(TelemetryEvent::Health(HealthStatus::degraded(
+                                        &self.config.hackrf_sweep_path,
+                                        &message,
+                                        Some(message.clone()),
+                                    )))
+                                    .await;
+                                next_live_restart_at = Instant::now() + self.config.restart_backoff;
+                            }
+                        }
+                        ManagerMessage::PlaybackEnded(result) => {
+                            playback_runtime = None;
+                            if let Err(error) = result {
+                                logger::error(&format!("Playback session failed: {error}"));
+                            }
+                            playback_status.active = false;
+                            current_mode = CaptureMode::Live;
+                            self.telemetry_hub
+                                .publish(TelemetryEvent::PlaybackStatus(playback_status.clone()))
+                                .await;
+                            self.telemetry_hub
+                                .publish(TelemetryEvent::Health(HealthStatus::starting(
+                                    &self.config.hackrf_sweep_path,
+                                )))
+                                .await;
+                            self.publish_status(
+                                current_mode,
+                                &metrics,
+                                &recording_status,
+                                &playback_status,
+                                last_sweep_sequence,
+                                last_sweep_at_ms,
+                            )
+                            .await;
+                            next_live_restart_at = Instant::now();
+                        }
                     }
-                }, if current_mode == CaptureMode::Live && live_session.is_some() => {
-                    match line_result {
-                        Ok(Some(line)) => {
-                            sequence += 1;
-                            let captured_at_ms = logger::now_ms();
-                            match parse_sweep_line(&line, sequence, captured_at_ms) {
-                                Ok(sweep) => {
+                }
+                bus_event = bus_rx.recv() => {
+                    match bus_event {
+                        Ok(event) => {
+                            if recording_status.active {
+                                recording_status.event_count += 1;
+                            }
+
+                            match event {
+                                Event::SweepData(sweep) => {
+                                    metrics.sweep_count += 1;
                                     last_sweep_sequence = Some(sweep.sequence);
                                     last_sweep_at_ms = Some(sweep.captured_at_ms);
-                                    self.publish_event(&mut recorder, TelemetryEvent::Sweep(sweep.clone()), &mut metrics).await?;
-                                    let detection_output = detection_engine.process_sweep(&sweep);
-                                    self.publish_detection_output(&mut recorder, &mut metrics, detection_output).await?;
+                                    if current_mode == CaptureMode::Playback && playback_status.active {
+                                        playback_status.emitted_events += 1;
+                                    }
                                 }
-                                Err(error) => {
-                                    logger::warn(&format!(
-                                        "Skipping malformed sweep row: {error:#}. Raw line: {line}"
-                                    ));
-                                }
+                                Event::SignalPeak(_) => metrics.peak_count += 1,
+                                Event::OccupancyUpdate(_) => {}
+                                Event::AlertEvent(_) => metrics.alert_count += 1,
+                                Event::IgorAnalysis(_) => metrics.igor_count += 1,
                             }
                         }
-                        Ok(None) => {
-                            if let Some(session) = live_session.take() {
-                                self.handle_live_shutdown(session, None, &mut metrics).await?;
-                            }
-                            next_live_restart_at = Instant::now() + self.config.restart_backoff;
-                        }
-                        Err(error) => {
-                            if let Some(session) = live_session.take() {
-                                self.handle_live_shutdown(session, Some(error.to_string()), &mut metrics).await?;
-                            }
-                            next_live_restart_at = Instant::now() + self.config.restart_backoff;
-                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                     }
-                }
-                playback_result = async {
-                    match playback_session.as_mut() {
-                        Some(session) => session.next_event().await,
-                        None => pending().await,
-                    }
-                }, if current_mode == CaptureMode::Playback && playback_session.is_some() => {
-                    match playback_result {
-                        Ok(Some(event)) => {
-                            if let Some(session) = playback_session.as_ref() {
-                                playback_status.emitted_events = session.emitted_events();
-                            }
-                            self.publish_event(&mut recorder, event, &mut metrics).await?;
-                        }
-                        Ok(None) => {
-                            self.stop_playback(
-                                &mut playback_session,
-                                &mut current_mode,
-                                &mut playback_status,
-                                &recording_status,
-                                &metrics,
-                                last_sweep_sequence,
-                                last_sweep_at_ms,
-                            ).await?;
-                            next_live_restart_at = Instant::now();
-                        }
-                        Err(error) => {
-                            logger::error(&format!("Playback session failed: {error:#}"));
-                            self.stop_playback(
-                                &mut playback_session,
-                                &mut current_mode,
-                                &mut playback_status,
-                                &recording_status,
-                                &metrics,
-                                last_sweep_sequence,
-                                last_sweep_at_ms,
-                            ).await?;
-                            next_live_restart_at = Instant::now();
-                        }
-                    }
-                }
-                _ = occupancy_tick.tick(), if current_mode == CaptureMode::Live => {
-                    let occupancy = detection_engine.occupancy_snapshot(logger::now_ms());
-                    self.publish_event(&mut recorder, TelemetryEvent::Occupancy(occupancy), &mut metrics).await?;
                 }
                 _ = status_tick.tick() => {
-                    if let Some(existing) = recorder.as_ref() {
-                        recording_status = existing.status();
-                        self.telemetry_hub
-                            .publish(TelemetryEvent::RecordingStatus(recording_status.clone()))
-                            .await;
-                    }
-                    if let Some(session) = playback_session.as_ref() {
-                        playback_status.emitted_events = session.emitted_events();
-                        self.telemetry_hub
-                            .publish(TelemetryEvent::PlaybackStatus(playback_status.clone()))
-                            .await;
-                    }
+                    self.telemetry_hub
+                        .publish(TelemetryEvent::RecordingStatus(recording_status.clone()))
+                        .await;
+                    self.telemetry_hub
+                        .publish(TelemetryEvent::PlaybackStatus(playback_status.clone()))
+                        .await;
                     self.publish_status(
                         current_mode,
                         &metrics,
@@ -359,6 +391,206 @@ impl DeviceManager {
                     ));
                 }
             }
+        }
+
+        Ok(())
+    }
+
+    fn spawn_detection_workers(&self) {
+        let peak_bus = self.event_bus.clone();
+        let peak_threshold = self.config.peak_threshold_db;
+        tokio::spawn(async move {
+            if let Err(error) = PeakDetectorWorker::new(peak_threshold, peak_bus).run().await {
+                logger::error(&format!("Peak detector worker exited unexpectedly: {error:#}"));
+            }
+        });
+
+        let occupancy_bus = self.event_bus.clone();
+        let occupancy_threshold = self.config.peak_threshold_db;
+        let occupancy_window = self.config.occupancy_window_seconds;
+        let occupancy_recent_window = self.config.occupancy_recent_window_seconds;
+        let occupancy_interval = self.config.occupancy_snapshot_interval;
+        tokio::spawn(async move {
+            if let Err(error) = OccupancyWorker::new(
+                occupancy_threshold,
+                occupancy_window,
+                occupancy_recent_window,
+                occupancy_interval,
+                occupancy_bus,
+            )
+            .run()
+            .await
+            {
+                logger::error(&format!("Occupancy worker exited unexpectedly: {error:#}"));
+            }
+        });
+
+        let (detection_frame_tx, detection_frame_rx) = mpsc::channel(256);
+        let alert_bus = self.event_bus.clone();
+        let alert_config = Arc::clone(&self.config);
+        tokio::spawn(async move {
+            if let Err(error) = AlertEngineWorker::new(
+                alert_config.peak_threshold_db,
+                alert_config.occupancy_window_seconds,
+                alert_config.occupancy_recent_window_seconds,
+                alert_config.power_spike_threshold_db,
+                alert_config.burst_quiet_period,
+                alert_config.burst_max_duration,
+                alert_config.repeated_pulse_window,
+                alert_config.repeated_pulse_min_count,
+                alert_config.sustained_critical_period,
+                alert_bus,
+                Some(detection_frame_tx),
+            )
+            .run()
+            .await
+            {
+                logger::error(&format!("Alert engine worker exited unexpectedly: {error:#}"));
+            }
+        });
+
+        let igor_bus = self.event_bus.clone();
+        let igor_config = Arc::clone(&self.config);
+        tokio::spawn(async move {
+            if let Err(error) = IgorWorker::new(
+                igor_config.igor_correlation_window,
+                igor_config.igor_persistence_window,
+                igor_config.igor_min_peak_count,
+                igor_config.igor_score_threshold,
+                igor_bus,
+                detection_frame_rx,
+            )
+            .run()
+            .await
+            {
+                logger::error(&format!("IGOR worker exited unexpectedly: {error:#}"));
+            }
+        });
+    }
+
+    fn spawn_live_runtime(&self, manager_tx: mpsc::Sender<ManagerMessage>) -> LiveRuntime {
+        let (raw_tx, raw_rx) = mpsc::channel(4096);
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+
+        let capture_config = Arc::clone(&self.config);
+        let capture_manager_tx = manager_tx.clone();
+        let capture_handle = tokio::spawn(async move {
+            let result = SweepCaptureEngine::new(capture_config, raw_tx)
+                .run(shutdown_rx)
+                .await
+                .map_err(|error| error.to_string());
+            let _ = capture_manager_tx
+                .send(ManagerMessage::CaptureEnded(result))
+                .await;
+        });
+
+        let event_bus = self.event_bus.clone();
+        let parser_handle = tokio::spawn(async move {
+            if let Err(error) = SweepParser::new(event_bus).run(raw_rx).await {
+                logger::error(&format!("Sweep parser exited unexpectedly: {error:#}"));
+            }
+        });
+
+        LiveRuntime {
+            shutdown_tx,
+            capture_handle,
+            parser_handle,
+        }
+    }
+
+    async fn stop_live_runtime(&self, runtime: LiveRuntime) {
+        let _ = runtime.shutdown_tx.send(true);
+        let _ = runtime.capture_handle.await;
+        let _ = runtime.parser_handle.await;
+    }
+
+    async fn start_recording_runtime(
+        &self,
+        started_at_ms: u64,
+    ) -> Result<(RecordingRuntime, RecordingStatus)> {
+        let recorder = Recorder::start(&self.config.recordings_dir, started_at_ms).await?;
+        let status = recorder.status();
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let receiver = self.event_bus.subscribe();
+        let handle = tokio::spawn(async move {
+            recorder
+                .run_until_shutdown(receiver, Some(shutdown_rx))
+                .await
+        });
+
+        Ok((
+            RecordingRuntime {
+                shutdown_tx,
+                handle,
+            },
+            status,
+        ))
+    }
+
+    async fn stop_recording_runtime(&self, runtime: RecordingRuntime) -> Result<RecordingStatus> {
+        let _ = runtime.shutdown_tx.send(true);
+        runtime
+            .handle
+            .await
+            .map_err(|error| anyhow!("recording task join failed: {error}"))?
+    }
+
+    async fn start_playback_runtime(
+        &self,
+        manager_tx: mpsc::Sender<ManagerMessage>,
+        file_path: PathBuf,
+        speed: Option<f32>,
+    ) -> Result<(PlaybackRuntime, PlaybackStatus)> {
+        let speed = speed.unwrap_or(self.config.default_playback_speed);
+        let session = PlaybackSession::open(&file_path, speed).await?;
+        let status = PlaybackStatus {
+            active: true,
+            file_path: Some(session.file_path().display().to_string()),
+            speed: session.speed(),
+            started_at_ms: Some(logger::now_ms()),
+            emitted_events: 0,
+        };
+        let event_bus = self.event_bus.clone();
+        let handle = tokio::spawn(async move {
+            let mut session = session;
+            let result = session
+                .replay_into_bus(&event_bus)
+                .await
+                .map_err(|error| error.to_string());
+            let _ = manager_tx.send(ManagerMessage::PlaybackEnded(result)).await;
+        });
+
+        Ok((PlaybackRuntime { handle }, status))
+    }
+
+    async fn stop_playback_runtime(&self, runtime: PlaybackRuntime) {
+        runtime.handle.abort();
+        let _ = runtime.handle.await;
+    }
+
+    fn capture_failure_message(
+        &self,
+        result: std::result::Result<CaptureExitStatus, String>,
+    ) -> String {
+        match result {
+            Ok(exit_status) if exit_status.success => {
+                "Sweep capture ended unexpectedly; restarting.".to_string()
+            }
+            Ok(exit_status) => {
+                let mut message = format!(
+                    "Sweep capture exited with code {:?}; restarting.",
+                    exit_status.exit_code
+                );
+                if let Some(stderr_summary) = exit_status.stderr_summary() {
+                    message.push_str(" stderr: ");
+                    message.push_str(&stderr_summary);
+                }
+                message
+            }
+            Err(error) => format!(
+                "Unable to launch {}: {error}",
+                self.config.hackrf_sweep_path
+            ),
         }
     }
 
@@ -486,7 +718,7 @@ impl DeviceManager {
         }
 
         if let Some(existing) = recorder.as_mut() {
-            if let Err(error) = existing.record(logger::now_ms(), &event).await {
+            if let Err(error) = existing.record_telemetry(logger::now_ms(), &event).await {
                 logger::error(&format!("Failed to persist telemetry event: {error:#}"));
             }
         }
@@ -686,6 +918,7 @@ mod tests {
 
     use super::DeviceManager;
     use crate::config::{Config, FrequencyRange};
+    use crate::core::event_bus::EventBus;
     use crate::models::{
         CaptureMode, HealthState, HealthStatus, OccupancySnapshot, RecordedTelemetry,
         StatusMetrics, TelemetryEvent,
@@ -748,10 +981,11 @@ mod tests {
     }
 
     fn build_manager(config: Arc<Config>) -> (DeviceManager, Arc<ServiceState>) {
+        let event_bus = EventBus::new(32);
         let (telemetry_tx, _) = broadcast::channel(32);
         let (control_tx, control_rx) = mpsc::channel(4);
-        let state = ServiceState::new(config.clone(), telemetry_tx, control_tx, 1);
-        let manager = DeviceManager::new(config, state.telemetry_hub(), control_rx, 1);
+        let state = ServiceState::new(config.clone(), event_bus.clone(), telemetry_tx, control_tx, 1);
+        let manager = DeviceManager::new(config, event_bus, state.telemetry_hub(), control_rx, 1);
         (manager, state)
     }
 

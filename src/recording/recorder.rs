@@ -8,10 +8,13 @@ use anyhow::{Context, Result};
 use chrono::Utc;
 use tokio::fs::{File, OpenOptions, create_dir_all};
 use tokio::io::{AsyncWriteExt, BufWriter};
+use tokio::sync::{broadcast::error::RecvError, watch};
 use uuid::Uuid;
 
 use crate::core::logger;
-use crate::models::{RecordedTelemetry, RecordingFileSummary, RecordingStatus, TelemetryEvent};
+use crate::models::{
+    Event, RecordedEvent, RecordedTelemetry, RecordingFileSummary, RecordingStatus, TelemetryEvent,
+};
 
 pub struct Recorder {
     session_id: String,
@@ -51,12 +54,24 @@ impl Recorder {
         })
     }
 
-    pub async fn record(&mut self, recorded_at_ms: u64, event: &TelemetryEvent) -> Result<()> {
-        if !event.replayable() {
-            return Ok(());
-        }
+    pub async fn record(&mut self, event: &Event) -> Result<()> {
+        self.write_recorded_event(event.timestamp_ms(), event).await
+    }
 
-        let payload = RecordedTelemetry {
+    pub async fn record_telemetry(
+        &mut self,
+        recorded_at_ms: u64,
+        event: &TelemetryEvent,
+    ) -> Result<()> {
+        let Some(event) = telemetry_to_event(event) else {
+            return Ok(());
+        };
+
+        self.write_recorded_event(recorded_at_ms, &event).await
+    }
+
+    async fn write_recorded_event(&mut self, recorded_at_ms: u64, event: &Event) -> Result<()> {
+        let payload = RecordedEvent {
             session_id: self.session_id.clone(),
             event_type: event.kind().to_string(),
             recorded_at_ms,
@@ -67,6 +82,46 @@ impl Recorder {
         self.writer.write_all(&line).await?;
         self.event_count += 1;
         Ok(())
+    }
+
+    pub async fn run(
+        self,
+        receiver: tokio::sync::broadcast::Receiver<Event>,
+    ) -> Result<RecordingStatus> {
+        self.run_until_shutdown(receiver, None).await
+    }
+
+    pub async fn run_until_shutdown(
+        mut self,
+        mut receiver: tokio::sync::broadcast::Receiver<Event>,
+        mut shutdown_rx: Option<watch::Receiver<bool>>,
+    ) -> Result<RecordingStatus> {
+        loop {
+            if let Some(shutdown_rx) = shutdown_rx.as_mut() {
+                tokio::select! {
+                    changed = shutdown_rx.changed() => {
+                        if changed.is_err() || *shutdown_rx.borrow() {
+                            break;
+                        }
+                    }
+                    received = receiver.recv() => {
+                        match received {
+                            Ok(event) => self.record(&event).await?,
+                            Err(RecvError::Lagged(_)) => continue,
+                            Err(RecvError::Closed) => break,
+                        }
+                    }
+                }
+            } else {
+                match receiver.recv().await {
+                    Ok(event) => self.record(&event).await?,
+                    Err(RecvError::Lagged(_)) => continue,
+                    Err(RecvError::Closed) => break,
+                }
+            }
+        }
+
+        self.stop().await
     }
 
     pub async fn flush(&mut self) -> Result<()> {
@@ -87,6 +142,25 @@ impl Recorder {
             started_at_ms: Some(self.started_at_ms),
             event_count: self.event_count,
         }
+    }
+}
+
+fn telemetry_to_event(event: &TelemetryEvent) -> Option<Event> {
+    match event {
+        TelemetryEvent::Sweep(sweep) => Some(Event::SweepData(sweep.clone())),
+        TelemetryEvent::Peak(peak) => Some(Event::SignalPeak(peak.clone())),
+        TelemetryEvent::Occupancy(snapshot) => {
+            Some(Event::OccupancyUpdate(snapshot.clone().into()))
+        }
+        TelemetryEvent::Alert(alert) => Some(Event::AlertEvent(alert.clone())),
+        TelemetryEvent::IgorAssessment(assessment) => {
+            Some(Event::IgorAnalysis(assessment.clone().into()))
+        }
+        TelemetryEvent::Health(_)
+        | TelemetryEvent::Status(_)
+        | TelemetryEvent::Anomaly(_)
+        | TelemetryEvent::RecordingStatus(_)
+        | TelemetryEvent::PlaybackStatus(_) => None,
     }
 }
 
@@ -183,32 +257,76 @@ fn summarize_recording(recording_path: &Path) -> Result<RecordingMetrics> {
             continue;
         }
 
-        let event: RecordedTelemetry = serde_json::from_str(&line).with_context(|| {
+        let parsed = parse_recording_line(&line).with_context(|| {
             format!(
                 "failed to parse line {line_number} in recording {}",
                 recording_path.display()
             )
         })?;
 
-        metrics.started_at_ms.get_or_insert(event.recorded_at_ms);
-        metrics.ended_at_ms = Some(event.recorded_at_ms);
+        metrics.started_at_ms.get_or_insert(parsed.recorded_at_ms);
+        metrics.ended_at_ms = Some(parsed.recorded_at_ms);
         metrics.event_count += 1;
 
-        match event.event {
-            TelemetryEvent::Alert(_) => metrics.alert_count += 1,
-            TelemetryEvent::Anomaly(_) => metrics.anomaly_count += 1,
-            TelemetryEvent::IgorAssessment(_) => metrics.igor_count += 1,
-            TelemetryEvent::Health(_)
-            | TelemetryEvent::Status(_)
-            | TelemetryEvent::Sweep(_)
-            | TelemetryEvent::Peak(_)
-            | TelemetryEvent::Occupancy(_)
-            | TelemetryEvent::RecordingStatus(_)
-            | TelemetryEvent::PlaybackStatus(_) => {}
+        match parsed.event_kind {
+            RecordingEventKind::Alert => metrics.alert_count += 1,
+            RecordingEventKind::Anomaly => metrics.anomaly_count += 1,
+            RecordingEventKind::Igor => metrics.igor_count += 1,
+            RecordingEventKind::Other => {}
         }
     }
 
     Ok(metrics)
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RecordingEventKind {
+    Alert,
+    Anomaly,
+    Igor,
+    Other,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ParsedRecordingLine {
+    recorded_at_ms: u64,
+    event_kind: RecordingEventKind,
+}
+
+fn parse_recording_line(line: &str) -> Result<ParsedRecordingLine> {
+    if let Ok(recorded) = serde_json::from_str::<RecordedEvent>(line) {
+        let event_kind = match recorded.event {
+            Event::AlertEvent(_) => RecordingEventKind::Alert,
+            Event::IgorAnalysis(_) => RecordingEventKind::Igor,
+            Event::SweepData(_) | Event::SignalPeak(_) | Event::OccupancyUpdate(_) => {
+                RecordingEventKind::Other
+            }
+        };
+
+        return Ok(ParsedRecordingLine {
+            recorded_at_ms: recorded.recorded_at_ms,
+            event_kind,
+        });
+    }
+
+    let recorded = serde_json::from_str::<RecordedTelemetry>(line)?;
+    let event_kind = match recorded.event {
+        TelemetryEvent::Alert(_) => RecordingEventKind::Alert,
+        TelemetryEvent::Anomaly(_) => RecordingEventKind::Anomaly,
+        TelemetryEvent::IgorAssessment(_) => RecordingEventKind::Igor,
+        TelemetryEvent::Health(_)
+        | TelemetryEvent::Status(_)
+        | TelemetryEvent::Sweep(_)
+        | TelemetryEvent::Peak(_)
+        | TelemetryEvent::Occupancy(_)
+        | TelemetryEvent::RecordingStatus(_)
+        | TelemetryEvent::PlaybackStatus(_) => RecordingEventKind::Other,
+    };
+
+    Ok(ParsedRecordingLine {
+        recorded_at_ms: recorded.recorded_at_ms,
+        event_kind,
+    })
 }
 
 #[cfg(test)]
@@ -218,8 +336,9 @@ mod tests {
     use tempfile::tempdir;
 
     use crate::models::{
-        AlertEvent, AlertSeverity, AnomalyEvent, AnomalyType, IgorAssessment, IgorFindingKind,
-        OccupancySnapshot, RecordedTelemetry, TelemetryEvent,
+        AlertEvent, AlertSeverity, AnomalyEvent, AnomalyType, Event, IgorAnalysis,
+        IgorAssessment, IgorFindingKind, OccupancySnapshot, OccupancyUpdate, RecordedEvent,
+        RecordedTelemetry, TelemetryEvent,
     };
 
     use super::list_recordings;
@@ -337,5 +456,89 @@ mod tests {
             recorded_at_ms,
             event,
         }
+    }
+
+    #[test]
+    fn list_recordings_summarizes_canonical_event_logs() {
+        let temp_dir = tempdir().expect("temp dir should be created");
+        let dated_dir = temp_dir.path().join("20260511");
+        fs::create_dir_all(&dated_dir).expect("dated directory should be created");
+        let recording_path = dated_dir.join("session-2.jsonl");
+
+        let events = vec![
+            RecordedEvent {
+                session_id: "session-2".to_string(),
+                event_type: "sweep_data".to_string(),
+                recorded_at_ms: 100,
+                event: Event::SweepData(crate::models::SweepData {
+                    sequence: 1,
+                    captured_at_ms: 100,
+                    timestamp: "2026-05-11T18:00:00Z".to_string(),
+                    frequency_start_hz: 1,
+                    frequency_end_hz: 2,
+                    bin_width_hz: 1.0,
+                    sample_count: 1,
+                    power_values: vec![-20.0],
+                }),
+            },
+            RecordedEvent {
+                session_id: "session-2".to_string(),
+                event_type: "occupancy_update".to_string(),
+                recorded_at_ms: 200,
+                event: Event::OccupancyUpdate(OccupancyUpdate::default()),
+            },
+            RecordedEvent {
+                session_id: "session-2".to_string(),
+                event_type: "alert_event".to_string(),
+                recorded_at_ms: 300,
+                event: Event::AlertEvent(AlertEvent {
+                    id: "alert-1".to_string(),
+                    alert_type: "power_spike".to_string(),
+                    severity: AlertSeverity::High,
+                    message: "alert".to_string(),
+                    detected_at_ms: 300,
+                    source_sequence: Some(1),
+                    frequency_start_hz: Some(1),
+                    frequency_end_hz: Some(2),
+                    power: Some(-20.0),
+                }),
+            },
+            RecordedEvent {
+                session_id: "session-2".to_string(),
+                event_type: "igor_analysis".to_string(),
+                recorded_at_ms: 400,
+                event: Event::IgorAnalysis(IgorAnalysis {
+                    id: "igor-1".to_string(),
+                    generated_at_ms: 400,
+                    source_sequence: 1,
+                    finding_kind: IgorFindingKind::PersistentEmitter,
+                    severity: AlertSeverity::Critical,
+                    risk_score: 90,
+                    frequency_start_hz: 1,
+                    frequency_end_hz: 2,
+                    evidence_count: 3,
+                    distinct_anomaly_types: vec![AnomalyType::PowerSpike],
+                    max_power: -10.0,
+                    message: "igor".to_string(),
+                }),
+            },
+        ];
+
+        let payload = events
+            .into_iter()
+            .map(|event| serde_json::to_string(&event).expect("event should serialize"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        fs::write(&recording_path, format!("{payload}\n"))
+            .expect("recording file should be written");
+
+        let recordings = list_recordings(temp_dir.path()).expect("recordings should be listed");
+        let summary = &recordings[0];
+
+        assert_eq!(summary.started_at_ms, Some(100));
+        assert_eq!(summary.ended_at_ms, Some(400));
+        assert_eq!(summary.event_count, Some(4));
+        assert_eq!(summary.alert_count, Some(1));
+        assert_eq!(summary.igor_count, Some(1));
     }
 }

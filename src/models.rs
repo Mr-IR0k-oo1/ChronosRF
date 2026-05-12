@@ -213,10 +213,37 @@ pub struct OccupancyStats {
 }
 
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
+pub struct OccupancyUpdate {
+    pub generated_at_ms: u64,
+    pub window_seconds: u64,
+    pub bins: Vec<OccupancyStats>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
 pub struct OccupancySnapshot {
     pub generated_at_ms: u64,
     pub window_seconds: u64,
     pub bins: Vec<OccupancyStats>,
+}
+
+impl From<OccupancyUpdate> for OccupancySnapshot {
+    fn from(update: OccupancyUpdate) -> Self {
+        Self {
+            generated_at_ms: update.generated_at_ms,
+            window_seconds: update.window_seconds,
+            bins: update.bins,
+        }
+    }
+}
+
+impl From<OccupancySnapshot> for OccupancyUpdate {
+    fn from(snapshot: OccupancySnapshot) -> Self {
+        Self {
+            generated_at_ms: snapshot.generated_at_ms,
+            window_seconds: snapshot.window_seconds,
+            bins: snapshot.bins,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -262,6 +289,97 @@ pub struct IgorAssessment {
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct IgorAnalysis {
+    pub id: String,
+    pub generated_at_ms: u64,
+    pub source_sequence: u64,
+    pub finding_kind: IgorFindingKind,
+    pub severity: AlertSeverity,
+    pub risk_score: u32,
+    pub frequency_start_hz: u64,
+    pub frequency_end_hz: u64,
+    pub evidence_count: u64,
+    pub distinct_anomaly_types: Vec<AnomalyType>,
+    pub max_power: f32,
+    pub message: String,
+}
+
+impl From<IgorAnalysis> for IgorAssessment {
+    fn from(analysis: IgorAnalysis) -> Self {
+        Self {
+            id: analysis.id,
+            generated_at_ms: analysis.generated_at_ms,
+            source_sequence: analysis.source_sequence,
+            finding_kind: analysis.finding_kind,
+            severity: analysis.severity,
+            risk_score: analysis.risk_score,
+            frequency_start_hz: analysis.frequency_start_hz,
+            frequency_end_hz: analysis.frequency_end_hz,
+            evidence_count: analysis.evidence_count,
+            distinct_anomaly_types: analysis.distinct_anomaly_types,
+            max_power: analysis.max_power,
+            message: analysis.message,
+        }
+    }
+}
+
+impl From<IgorAssessment> for IgorAnalysis {
+    fn from(assessment: IgorAssessment) -> Self {
+        Self {
+            id: assessment.id,
+            generated_at_ms: assessment.generated_at_ms,
+            source_sequence: assessment.source_sequence,
+            finding_kind: assessment.finding_kind,
+            severity: assessment.severity,
+            risk_score: assessment.risk_score,
+            frequency_start_hz: assessment.frequency_start_hz,
+            frequency_end_hz: assessment.frequency_end_hz,
+            evidence_count: assessment.evidence_count,
+            distinct_anomaly_types: assessment.distinct_anomaly_types,
+            max_power: assessment.max_power,
+            message: assessment.message,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(tag = "type", content = "data")]
+pub enum Event {
+    #[serde(rename = "sweep_data")]
+    SweepData(SweepData),
+    #[serde(rename = "signal_peak")]
+    SignalPeak(SignalPeak),
+    #[serde(rename = "occupancy_update")]
+    OccupancyUpdate(OccupancyUpdate),
+    #[serde(rename = "alert_event")]
+    AlertEvent(AlertEvent),
+    #[serde(rename = "igor_analysis")]
+    IgorAnalysis(IgorAnalysis),
+}
+
+impl Event {
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::SweepData(_) => "sweep_data",
+            Self::SignalPeak(_) => "signal_peak",
+            Self::OccupancyUpdate(_) => "occupancy_update",
+            Self::AlertEvent(_) => "alert_event",
+            Self::IgorAnalysis(_) => "igor_analysis",
+        }
+    }
+
+    pub fn timestamp_ms(&self) -> u64 {
+        match self {
+            Self::SweepData(sweep) => sweep.captured_at_ms,
+            Self::SignalPeak(peak) => peak.detected_at_ms,
+            Self::OccupancyUpdate(update) => update.generated_at_ms,
+            Self::AlertEvent(alert) => alert.detected_at_ms,
+            Self::IgorAnalysis(analysis) => analysis.generated_at_ms,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct RecordingFileSummary {
     pub session_id: String,
     pub file_path: String,
@@ -281,6 +399,14 @@ pub struct RecordedTelemetry {
     pub event_type: String,
     pub recorded_at_ms: u64,
     pub event: TelemetryEvent,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct RecordedEvent {
+    pub session_id: String,
+    pub event_type: String,
+    pub recorded_at_ms: u64,
+    pub event: Event,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -334,5 +460,142 @@ impl TelemetryEvent {
                 | Self::Alert(_)
                 | Self::IgorAssessment(_)
         )
+    }
+}
+
+impl From<Event> for TelemetryEvent {
+    fn from(event: Event) -> Self {
+        match event {
+            Event::SweepData(sweep) => Self::Sweep(sweep),
+            Event::SignalPeak(peak) => Self::Peak(peak),
+            Event::OccupancyUpdate(update) => Self::Occupancy(update.into()),
+            Event::AlertEvent(alert) => Self::Alert(alert),
+            Event::IgorAnalysis(analysis) => Self::IgorAssessment(analysis.into()),
+        }
+    }
+}
+
+#[cfg(test)]
+mod event_tests {
+    use super::{
+        AlertEvent, AlertSeverity, AnomalyType, Event, IgorAnalysis, IgorFindingKind,
+        OccupancyStats, OccupancyUpdate, SignalPeak, SweepData, TelemetryEvent,
+    };
+
+    fn sample_sweep() -> SweepData {
+        SweepData {
+            sequence: 42,
+            captured_at_ms: 1_111,
+            timestamp: "2026-05-11T18:00:00Z".to_string(),
+            frequency_start_hz: 2_400_000_000,
+            frequency_end_hz: 2_401_000_000,
+            bin_width_hz: 100_000.0,
+            sample_count: 10,
+            power_values: vec![-70.0, -32.0],
+        }
+    }
+
+    #[test]
+    fn canonical_event_round_trips_through_serde() {
+        let event = Event::SignalPeak(SignalPeak {
+            timestamp: "2026-05-11T18:00:01Z".to_string(),
+            detected_at_ms: 2_222,
+            source_sequence: 42,
+            start_bin_index: 1,
+            end_bin_index: 2,
+            frequency: 2_400_500_000,
+            frequency_start_hz: 2_400_000_000,
+            frequency_end_hz: 2_401_000_000,
+            bandwidth_hz: 1_000_000,
+            max_power: -18.0,
+            average_power: -21.0,
+        });
+
+        let encoded = serde_json::to_string(&event).expect("event should serialize");
+        let decoded: Event = serde_json::from_str(&encoded).expect("event should deserialize");
+
+        assert_eq!(decoded, event);
+        assert_eq!(decoded.kind(), "signal_peak");
+        assert_eq!(decoded.timestamp_ms(), 2_222);
+    }
+
+    #[test]
+    fn compatibility_projection_maps_canonical_event_into_legacy_telemetry() {
+        let telemetry = TelemetryEvent::from(Event::SweepData(sample_sweep()));
+
+        match telemetry {
+            TelemetryEvent::Sweep(sweep) => assert_eq!(sweep.sequence, 42),
+            other => panic!("expected sweep telemetry, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn occupancy_update_converts_to_snapshot_shape() {
+        let update = OccupancyUpdate {
+            generated_at_ms: 3_333,
+            window_seconds: 60,
+            bins: vec![OccupancyStats {
+                frequency_hz: 2_400_500_000,
+                activity_percentage: 50.0,
+                average_power: -20.0,
+                active_duration_seconds: 30,
+                window_seconds: 60,
+                recent_activity_percentage: 40.0,
+                baseline_activity_percentage: 20.0,
+            }],
+        };
+
+        let telemetry = TelemetryEvent::from(Event::OccupancyUpdate(update));
+        match telemetry {
+            TelemetryEvent::Occupancy(snapshot) => {
+                assert_eq!(snapshot.generated_at_ms, 3_333);
+                assert_eq!(snapshot.bins.len(), 1);
+            }
+            other => panic!("expected occupancy telemetry, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn igor_analysis_converts_to_legacy_assessment_shape() {
+        let analysis = IgorAnalysis {
+            id: "igor-1".to_string(),
+            generated_at_ms: 4_444,
+            source_sequence: 42,
+            finding_kind: IgorFindingKind::CoordinatedEmitter,
+            severity: AlertSeverity::Critical,
+            risk_score: 95,
+            frequency_start_hz: 2_400_000_000,
+            frequency_end_hz: 2_401_000_000,
+            evidence_count: 3,
+            distinct_anomaly_types: vec![AnomalyType::PowerSpike],
+            max_power: -12.0,
+            message: "test".to_string(),
+        };
+
+        let telemetry = TelemetryEvent::from(Event::IgorAnalysis(analysis));
+        match telemetry {
+            TelemetryEvent::IgorAssessment(assessment) => {
+                assert_eq!(assessment.id, "igor-1");
+                assert_eq!(assessment.risk_score, 95);
+            }
+            other => panic!("expected IGOR telemetry, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn alert_event_timestamps_are_exposed_by_canonical_event() {
+        let event = Event::AlertEvent(AlertEvent {
+            id: "alert-1".to_string(),
+            alert_type: "power_spike".to_string(),
+            severity: AlertSeverity::High,
+            message: "alert".to_string(),
+            detected_at_ms: 5_555,
+            source_sequence: Some(42),
+            frequency_start_hz: Some(2_400_000_000),
+            frequency_end_hz: Some(2_401_000_000),
+            power: Some(-11.0),
+        });
+
+        assert_eq!(event.timestamp_ms(), 5_555);
     }
 }

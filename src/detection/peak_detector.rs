@@ -1,4 +1,8 @@
-use crate::models::{SignalPeak, SweepData};
+use anyhow::Result;
+use tokio::sync::broadcast::error::RecvError;
+
+use crate::core::event_bus::EventBus;
+use crate::models::{Event, SignalPeak, SweepData};
 
 pub struct PeakDetector {
     threshold_db: f32,
@@ -60,6 +64,38 @@ impl PeakDetector {
         }
 
         peaks
+    }
+}
+
+pub struct PeakDetectorWorker {
+    detector: PeakDetector,
+    event_bus: EventBus,
+}
+
+impl PeakDetectorWorker {
+    pub fn new(threshold_db: f32, event_bus: EventBus) -> Self {
+        Self {
+            detector: PeakDetector::new(threshold_db),
+            event_bus,
+        }
+    }
+
+    pub async fn run(self) -> Result<()> {
+        let mut receiver = self.event_bus.subscribe();
+
+        loop {
+            match receiver.recv().await {
+                Ok(Event::SweepData(sweep)) => {
+                    for peak in self.detector.detect(&sweep) {
+                        self.event_bus.publish(Event::SignalPeak(peak))?;
+                    }
+                }
+                Ok(_) | Err(RecvError::Lagged(_)) => {}
+                Err(RecvError::Closed) => break,
+            }
+        }
+
+        Ok(())
     }
 }
 

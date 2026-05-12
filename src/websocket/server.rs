@@ -295,6 +295,7 @@ mod tests {
     use tower::ServiceExt;
 
     use crate::config::Config;
+    use crate::core::event_bus::EventBus;
     use crate::models::{
         AlertEvent, AlertSeverity, CaptureMode, HealthState, HealthStatus, IgorAssessment,
         IgorFindingKind, OccupancySnapshot, PlaybackStatus, RecordedTelemetry,
@@ -306,9 +307,10 @@ mod tests {
 
     async fn test_state() -> AppState {
         let config = std::sync::Arc::new(Config::from_env().expect("config should load"));
+        let event_bus = EventBus::new(64);
         let (telemetry_tx, _) = tokio::sync::broadcast::channel(64);
         let (control_tx, _control_rx) = tokio::sync::mpsc::channel(4);
-        ServiceState::new(config, telemetry_tx, control_tx, 123)
+        ServiceState::new(config, event_bus, telemetry_tx, control_tx, 123)
     }
 
     async fn read_json<T: DeserializeOwned>(response: axum::response::Response) -> T {
@@ -498,9 +500,10 @@ mod tests {
         let mut config = Config::from_env().expect("config should load");
         config.recordings_dir = recordings_dir;
         let config = std::sync::Arc::new(config);
+        let event_bus = EventBus::new(64);
         let (telemetry_tx, _) = tokio::sync::broadcast::channel(64);
         let (control_tx, _control_rx) = tokio::sync::mpsc::channel(4);
-        let app_state = ServiceState::new(config, telemetry_tx, control_tx, 123);
+        let app_state = ServiceState::new(config, event_bus, telemetry_tx, control_tx, 123);
 
         let response = build_router(app_state)
             .oneshot(

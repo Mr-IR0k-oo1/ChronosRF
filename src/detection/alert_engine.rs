@@ -1,9 +1,26 @@
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
+use anyhow::Result;
+use tokio::sync::broadcast::error::RecvError;
+use tokio::sync::mpsc;
 use uuid::Uuid;
 
-use crate::models::{AlertEvent, AlertSeverity, AnomalyEvent, AnomalyType};
+use crate::core::event_bus::EventBus;
+use crate::models::{
+    AlertEvent, AlertSeverity, AnomalyEvent, AnomalyType, Event, SignalPeak, SweepData,
+};
+
+use super::anomaly_detector::AnomalyDetector;
+use super::occupancy_tracker::OccupancyTracker;
+use super::peak_detector::PeakDetector;
+
+#[derive(Clone, Debug)]
+pub struct DetectionFrame {
+    pub sweep: SweepData,
+    pub peaks: Vec<SignalPeak>,
+    pub anomalies: Vec<AnomalyEvent>,
+}
 
 pub struct AlertEngine {
     sustained_critical_period: Duration,
@@ -126,6 +143,86 @@ impl AlertEngine {
         }
 
         alerts
+    }
+}
+
+pub struct AlertEngineWorker {
+    peak_detector: PeakDetector,
+    occupancy_tracker: OccupancyTracker,
+    anomaly_detector: AnomalyDetector,
+    alert_engine: AlertEngine,
+    event_bus: EventBus,
+    detection_frame_tx: Option<mpsc::Sender<DetectionFrame>>,
+}
+
+impl AlertEngineWorker {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        peak_threshold_db: f32,
+        occupancy_window_seconds: u64,
+        occupancy_recent_window_seconds: u64,
+        power_spike_threshold_db: f32,
+        burst_quiet_period: Duration,
+        burst_max_duration: Duration,
+        repeated_pulse_window: Duration,
+        repeated_pulse_min_count: usize,
+        sustained_critical_period: Duration,
+        event_bus: EventBus,
+        detection_frame_tx: Option<mpsc::Sender<DetectionFrame>>,
+    ) -> Self {
+        Self {
+            peak_detector: PeakDetector::new(peak_threshold_db),
+            occupancy_tracker: OccupancyTracker::new(
+                peak_threshold_db,
+                occupancy_window_seconds,
+                occupancy_recent_window_seconds,
+            ),
+            anomaly_detector: AnomalyDetector::new(
+                power_spike_threshold_db,
+                burst_quiet_period,
+                burst_max_duration,
+                repeated_pulse_window,
+                repeated_pulse_min_count,
+                40.0,
+            ),
+            alert_engine: AlertEngine::new(sustained_critical_period),
+            event_bus,
+            detection_frame_tx,
+        }
+    }
+
+    pub async fn run(mut self) -> Result<()> {
+        let mut receiver = self.event_bus.subscribe();
+
+        loop {
+            match receiver.recv().await {
+                Ok(Event::SweepData(sweep)) => {
+                    self.occupancy_tracker.update(&sweep);
+                    let peaks = self.peak_detector.detect(&sweep);
+                    let anomalies = self
+                        .anomaly_detector
+                        .detect(&sweep, &peaks, &mut self.occupancy_tracker);
+
+                    if let Some(tx) = self.detection_frame_tx.as_ref() {
+                        let _ = tx
+                            .send(DetectionFrame {
+                                sweep: sweep.clone(),
+                                peaks: peaks.clone(),
+                                anomalies: anomalies.clone(),
+                            })
+                            .await;
+                    }
+
+                    for alert in self.alert_engine.generate(&anomalies) {
+                        self.event_bus.publish(Event::AlertEvent(alert))?;
+                    }
+                }
+                Ok(_) | Err(RecvError::Lagged(_)) => {}
+                Err(RecvError::Closed) => break,
+            }
+        }
+
+        Ok(())
     }
 }
 

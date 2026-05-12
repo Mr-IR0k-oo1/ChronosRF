@@ -1,11 +1,15 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::Duration;
 
+use anyhow::Result;
+use tokio::sync::mpsc;
 use uuid::Uuid;
 
+use crate::core::event_bus::EventBus;
+use crate::detection::alert_engine::DetectionFrame;
 use crate::models::{
-    AlertSeverity, AnomalyEvent, AnomalyType, IgorAssessment, IgorFindingKind, SignalPeak,
-    SweepData,
+    AlertSeverity, AnomalyEvent, AnomalyType, Event, IgorAnalysis, IgorAssessment,
+    IgorFindingKind, SignalPeak, SweepData,
 };
 
 #[derive(Clone, Debug)]
@@ -40,6 +44,12 @@ pub struct IgorEngine {
     min_peak_count: usize,
     score_threshold: u32,
     bands: HashMap<(u64, u64), BandContext>,
+}
+
+pub struct IgorWorker {
+    engine: IgorEngine,
+    event_bus: EventBus,
+    detection_frame_rx: mpsc::Receiver<DetectionFrame>,
 }
 
 impl IgorEngine {
@@ -182,6 +192,39 @@ impl IgorEngine {
                 || !context.recent_peaks.is_empty()
                 || !context.recent_anomalies.is_empty()
         });
+    }
+}
+
+impl IgorWorker {
+    pub fn new(
+        correlation_window: Duration,
+        persistence_window: Duration,
+        min_peak_count: usize,
+        score_threshold: u32,
+        event_bus: EventBus,
+        detection_frame_rx: mpsc::Receiver<DetectionFrame>,
+    ) -> Self {
+        Self {
+            engine: IgorEngine::new(
+                correlation_window,
+                persistence_window,
+                min_peak_count,
+                score_threshold,
+            ),
+            event_bus,
+            detection_frame_rx,
+        }
+    }
+
+    pub async fn run(mut self) -> Result<()> {
+        while let Some(frame) = self.detection_frame_rx.recv().await {
+            for analysis in self.engine.correlate(&frame.sweep, &frame.peaks, &frame.anomalies) {
+                self.event_bus
+                    .publish(Event::IgorAnalysis(IgorAnalysis::from(analysis)))?;
+            }
+        }
+
+        Ok(())
     }
 }
 
