@@ -1,0 +1,3 @@
+{"session_id": "test-session-001", "event_type": "occupancy", "recorded_at_ms": 1778664700000, "event": {"type": "occupancy", "data": {"bins": [1, 2, 3], "window_seconds": 300, "generated_at_ms": 1778664700000}}}
+{"session_id": "test-session-001", "event_type": "occupancy", "recorded_at_ms": 1778664701000, "event": {"type": "occupancy", "data": {"bins": [1, 2, 3], "window_seconds": 300, "generated_at_ms": 1778664701000}}}
+{"session_id": "test-session-001", "event_type": "occupancy", "recorded_at_ms": 1778664702000, "event": {"type": "occupancy", "data": {"bins": [1, 2, 3], "window_seconds": 300, "generated_at_ms": 1778664702000}}}

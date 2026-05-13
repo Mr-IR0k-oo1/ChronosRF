@@ -243,13 +243,15 @@ mod tests {
     use super::{
         CaptureSession, STDERR_LINE_LIMIT, build_capture_command, push_stderr_line, take_stdout,
     };
-    use crate::config::{Config, FrequencyRange};
+    use crate::config::{
+        Config, DEFAULT_HACKRF_INFO_PATH, DEFAULT_HACKRF_SWEEP_PATH, FrequencyRange,
+    };
 
     fn test_config() -> Config {
         Config {
             bind_addr: SocketAddr::from((Ipv4Addr::LOCALHOST, 9001)),
-            hackrf_info_path: "hackrf_info.exe".to_string(),
-            hackrf_sweep_path: "hackrf_sweep.exe".to_string(),
+            hackrf_info_path: DEFAULT_HACKRF_INFO_PATH.to_string(),
+            hackrf_sweep_path: DEFAULT_HACKRF_SWEEP_PATH.to_string(),
             freq_range_mhz: FrequencyRange {
                 start_mhz: 2400,
                 end_mhz: 2500,
@@ -296,10 +298,7 @@ mod tests {
             .map(|arg| arg.to_string_lossy().to_string())
             .collect::<Vec<_>>();
 
-        assert_eq!(
-            command.as_std().get_program(),
-            OsStr::new("hackrf_sweep.exe")
-        );
+        assert_eq!(command.as_std().get_program(), OsStr::new(DEFAULT_HACKRF_SWEEP_PATH));
         assert_eq!(
             args,
             vec![

@@ -7,6 +7,16 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
 
+#[cfg(target_os = "windows")]
+pub const DEFAULT_HACKRF_INFO_PATH: &str = "hackrf_info.exe";
+#[cfg(not(target_os = "windows"))]
+pub const DEFAULT_HACKRF_INFO_PATH: &str = "hackrf_info";
+
+#[cfg(target_os = "windows")]
+pub const DEFAULT_HACKRF_SWEEP_PATH: &str = "hackrf_sweep.exe";
+#[cfg(not(target_os = "windows"))]
+pub const DEFAULT_HACKRF_SWEEP_PATH: &str = "hackrf_sweep";
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FrequencyRange {
     pub start_mhz: u64,
@@ -88,9 +98,10 @@ pub struct Config {
 impl Config {
     pub fn from_env() -> Result<Self> {
         let bind_addr = read_env("SPECTRAGUARD_BIND_ADDR", "127.0.0.1:9001")?;
-        let hackrf_info_path = read_env_string("SPECTRAGUARD_HACKRF_INFO_PATH", "hackrf_info.exe");
+        let hackrf_info_path =
+            read_env_string("SPECTRAGUARD_HACKRF_INFO_PATH", DEFAULT_HACKRF_INFO_PATH);
         let hackrf_sweep_path =
-            read_env_string("SPECTRAGUARD_HACKRF_SWEEP_PATH", "hackrf_sweep.exe");
+            read_env_string("SPECTRAGUARD_HACKRF_SWEEP_PATH", DEFAULT_HACKRF_SWEEP_PATH);
         let freq_range_mhz = read_env("SPECTRAGUARD_FREQ_RANGE_MHZ", "2400:2500")?;
         let bin_width_hz = read_env("SPECTRAGUARD_BIN_WIDTH_HZ", "1000000")?;
         let lna_gain_db = read_env("SPECTRAGUARD_LNA_GAIN_DB", "16")?;

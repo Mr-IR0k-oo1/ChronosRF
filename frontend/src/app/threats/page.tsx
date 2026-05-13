@@ -1,5 +1,5 @@
-import { ThreatDashboard } from "@/components/threat-dashboard";
+import { ThreatWorkspace } from "@/components/threat-workspace";
 
 export default function ThreatsPage() {
-  return <ThreatDashboard />;
+  return <ThreatWorkspace />;
 }

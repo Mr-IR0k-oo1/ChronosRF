@@ -1,0 +1,10 @@
+/home/irok/Projects/ChronosRF/target/debug/deps/tokio_tungstenite-37784a40729964d9.d: /home/irok/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-tungstenite-0.29.0/src/lib.rs /home/irok/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-tungstenite-0.29.0/src/compat.rs /home/irok/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-tungstenite-0.29.0/src/connect.rs /home/irok/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-tungstenite-0.29.0/src/handshake.rs /home/irok/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-tungstenite-0.29.0/src/stream.rs /home/irok/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-tungstenite-0.29.0/src/tls.rs
+
+/home/irok/Projects/ChronosRF/target/debug/deps/libtokio_tungstenite-37784a40729964d9.rmeta: /home/irok/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-tungstenite-0.29.0/src/lib.rs /home/irok/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-tungstenite-0.29.0/src/compat.rs /home/irok/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-tungstenite-0.29.0/src/connect.rs /home/irok/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-tungstenite-0.29.0/src/handshake.rs /home/irok/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-tungstenite-0.29.0/src/stream.rs /home/irok/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-tungstenite-0.29.0/src/tls.rs
+
+/home/irok/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-tungstenite-0.29.0/src/lib.rs:
+/home/irok/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-tungstenite-0.29.0/src/compat.rs:
+/home/irok/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-tungstenite-0.29.0/src/connect.rs:
+/home/irok/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-tungstenite-0.29.0/src/handshake.rs:
+/home/irok/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-tungstenite-0.29.0/src/stream.rs:
+/home/irok/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-tungstenite-0.29.0/src/tls.rs:

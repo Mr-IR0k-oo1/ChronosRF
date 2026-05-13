@@ -83,7 +83,7 @@ export function DeviceDashboard() {
           tone="success"
           title="Recording session active"
           message={`Session ${telemetry.recordingStatus.session_id ?? "unknown"} is writing telemetry events to disk.`}
-          action={{ href: "/threats", label: "Open investigations" }}
+          action={{ href: "/investigation", label: "Open investigations" }}
         />
       ) : null}
       {operational.isPlaybackActive ? (
@@ -91,7 +91,7 @@ export function DeviceDashboard() {
           tone="info"
           title="Playback mode active"
           message={telemetry.playbackStatus?.file_path ?? "Recorded telemetry is currently replaying."}
-          action={{ href: "/threats?source=recorded", label: "Review playback" }}
+          action={{ href: "/investigation?source=recorded", label: "Review playback" }}
         />
       ) : null}
 

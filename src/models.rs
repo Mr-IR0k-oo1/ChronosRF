@@ -1,4 +1,6 @@
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
+
+pub const SCHEMA_VERSION: u32 = 1;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -201,6 +203,37 @@ pub struct SystemStatus {
     pub current_playback: PlaybackStatus,
 }
 
+// --- Backward-compatible OccupancyStats deserialization ---
+
+/// Deserialize a sequence of occupancy bins, handling per-element legacy format.
+fn deserialize_occupancy_bins<'de, D>(deserializer: D) -> Result<Vec<OccupancyStats>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let values = Vec::<serde_json::Value>::deserialize(deserializer)?;
+    let mut bins = Vec::with_capacity(values.len());
+    for value in values {
+        let stats: OccupancyStats = if value.is_number() {
+            // Legacy integer format
+            let pct = value.as_u64().unwrap_or(0);
+            OccupancyStats {
+                frequency_hz: 0,
+                activity_percentage: pct as f32,
+                average_power: 0.0,
+                active_duration_seconds: 0,
+                window_seconds: 0,
+                recent_activity_percentage: pct as f32,
+                baseline_activity_percentage: pct as f32,
+            }
+        } else {
+            // Modern structured format
+            serde_json::from_value(value).map_err(serde::de::Error::custom)?
+        };
+        bins.push(stats);
+    }
+    Ok(bins)
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct OccupancyStats {
     pub frequency_hz: u64,
@@ -216,6 +249,7 @@ pub struct OccupancyStats {
 pub struct OccupancyUpdate {
     pub generated_at_ms: u64,
     pub window_seconds: u64,
+    #[serde(deserialize_with = "deserialize_occupancy_bins")]
     pub bins: Vec<OccupancyStats>,
 }
 
@@ -223,6 +257,7 @@ pub struct OccupancyUpdate {
 pub struct OccupancySnapshot {
     pub generated_at_ms: u64,
     pub window_seconds: u64,
+    #[serde(deserialize_with = "deserialize_occupancy_bins")]
     pub bins: Vec<OccupancyStats>,
 }
 
@@ -379,19 +414,34 @@ impl Event {
     }
 }
 
+// --- Phase 1: Versioned RecordedEvent wrapper ---
+
+/// A versioned recording container that wraps events with schema metadata.
+/// Current schema version = 1.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-pub struct RecordingFileSummary {
-    pub session_id: String,
-    pub file_path: String,
-    pub size_bytes: u64,
-    pub modified_at_ms: u64,
-    pub started_at_ms: Option<u64>,
-    pub ended_at_ms: Option<u64>,
-    pub event_count: Option<u64>,
-    pub alert_count: Option<u64>,
-    pub anomaly_count: Option<u64>,
-    pub igor_count: Option<u64>,
+pub struct RecordedEvent {
+    pub schema_version: u32,
+    pub timestamp_ms: u64,
+    pub event: Event,
 }
+
+impl RecordedEvent {
+    /// Create a new RecordedEvent with the current schema version.
+    pub fn new(event: Event) -> Self {
+        Self {
+            schema_version: SCHEMA_VERSION,
+            timestamp_ms: event.timestamp_ms(),
+            event,
+        }
+    }
+
+    /// Returns the current schema version.
+    pub fn schema_version(&self) -> u32 {
+        self.schema_version
+    }
+}
+
+// --- Legacy RecordedTelemetry (kept for backward compatibility) ---
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct RecordedTelemetry {
@@ -399,14 +449,6 @@ pub struct RecordedTelemetry {
     pub event_type: String,
     pub recorded_at_ms: u64,
     pub event: TelemetryEvent,
-}
-
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-pub struct RecordedEvent {
-    pub session_id: String,
-    pub event_type: String,
-    pub recorded_at_ms: u64,
-    pub event: Event,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -475,11 +517,26 @@ impl From<Event> for TelemetryEvent {
     }
 }
 
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct RecordingFileSummary {
+    pub session_id: String,
+    pub file_path: String,
+    pub size_bytes: u64,
+    pub modified_at_ms: u64,
+    pub started_at_ms: Option<u64>,
+    pub ended_at_ms: Option<u64>,
+    pub event_count: Option<u64>,
+    pub alert_count: Option<u64>,
+    pub anomaly_count: Option<u64>,
+    pub igor_count: Option<u64>,
+}
+
 #[cfg(test)]
 mod event_tests {
     use super::{
         AlertEvent, AlertSeverity, AnomalyType, Event, IgorAnalysis, IgorFindingKind,
-        OccupancyStats, OccupancyUpdate, SignalPeak, SweepData, TelemetryEvent,
+        OccupancySnapshot, OccupancyStats, OccupancyUpdate, SignalPeak, SweepData, TelemetryEvent,
+        SCHEMA_VERSION,
     };
 
     fn sample_sweep() -> SweepData {
@@ -597,5 +654,91 @@ mod event_tests {
         });
 
         assert_eq!(event.timestamp_ms(), 5_555);
+    }
+
+    // --- Phase 6: Backward-compatible occupancy deserialization tests ---
+
+    #[test]
+    fn occupancy_deserializes_structured_bins() {
+        let json = r#"{
+            "generated_at_ms": 100,
+            "window_seconds": 60,
+            "bins": [
+                {
+                    "frequency_hz": 2400500000,
+                    "activity_percentage": 50.0,
+                    "average_power": -20.0,
+                    "active_duration_seconds": 30,
+                    "window_seconds": 60,
+                    "recent_activity_percentage": 40.0,
+                    "baseline_activity_percentage": 20.0
+                }
+            ]
+        }"#;
+
+        let update: OccupancyUpdate =
+            serde_json::from_str(json).expect("structured bins should deserialize");
+        assert_eq!(update.bins.len(), 1);
+        assert_eq!(update.bins[0].frequency_hz, 2_400_500_000);
+        assert_eq!(update.bins[0].activity_percentage, 50.0);
+    }
+
+    #[test]
+    fn occupancy_deserializes_legacy_integer_bins() {
+        // Legacy format where bins contain bare integers (activity percentages)
+        let json = r#"{
+            "generated_at_ms": 100,
+            "window_seconds": 60,
+            "bins": [75, 50, 25]
+        }"#;
+
+        let update: OccupancyUpdate =
+            serde_json::from_str(json).expect("legacy integer bins should deserialize");
+        assert_eq!(update.bins.len(), 3);
+        assert_eq!(update.bins[0].activity_percentage, 75.0);
+        assert_eq!(update.bins[1].activity_percentage, 50.0);
+        assert_eq!(update.bins[2].activity_percentage, 25.0);
+        assert_eq!(update.bins[0].frequency_hz, 0);
+    }
+
+    #[test]
+    fn occupancy_snapshot_legacy_roundtrip() {
+        let json = r#"{
+            "generated_at_ms": 200,
+            "window_seconds": 120,
+            "bins": [
+                {
+                    "frequency_hz": 2400500000,
+                    "activity_percentage": 60.0,
+                    "average_power": -25.0,
+                    "active_duration_seconds": 45,
+                    "window_seconds": 120,
+                    "recent_activity_percentage": 55.0,
+                    "baseline_activity_percentage": 30.0
+                },
+                80
+            ]
+        }"#;
+
+        let snapshot: OccupancySnapshot =
+            serde_json::from_str(json).expect("mixed format should deserialize");
+        assert_eq!(snapshot.bins.len(), 2);
+        assert_eq!(snapshot.bins[0].activity_percentage, 60.0);
+        assert_eq!(snapshot.bins[1].activity_percentage, 80.0);
+    }
+
+    #[test]
+    fn recorded_event_new_constructor() {
+        let event = Event::SweepData(sample_sweep());
+        let recorded = super::RecordedEvent::new(event);
+        assert_eq!(recorded.schema_version, SCHEMA_VERSION);
+        assert_eq!(recorded.timestamp_ms, 1_111);
+    }
+
+    #[test]
+    fn recorded_event_schema_version_accessible() {
+        let event = Event::SweepData(sample_sweep());
+        let recorded = super::RecordedEvent::new(event);
+        assert_eq!(recorded.schema_version(), SCHEMA_VERSION);
     }
 }

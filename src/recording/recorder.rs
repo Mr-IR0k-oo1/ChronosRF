@@ -43,7 +43,7 @@ impl Recorder {
             .await
             .with_context(|| format!("failed to create recording file {}", file_path.display()))?;
 
-        logger::info(&format!("Recording telemetry to {}.", file_path.display()));
+        logger::recorder_start(&session_id, &file_path.display().to_string());
 
         Ok(Self {
             session_id,
@@ -55,31 +55,27 @@ impl Recorder {
     }
 
     pub async fn record(&mut self, event: &Event) -> Result<()> {
-        self.write_recorded_event(event.timestamp_ms(), event).await
+        self.write_recorded_event(event).await
     }
 
     pub async fn record_telemetry(
         &mut self,
-        recorded_at_ms: u64,
+        _recorded_at_ms: u64,
         event: &TelemetryEvent,
     ) -> Result<()> {
         let Some(event) = telemetry_to_event(event) else {
             return Ok(());
         };
 
-        self.write_recorded_event(recorded_at_ms, &event).await
+        self.write_recorded_event(&event).await
     }
 
-    async fn write_recorded_event(&mut self, recorded_at_ms: u64, event: &Event) -> Result<()> {
-        let payload = RecordedEvent {
-            session_id: self.session_id.clone(),
-            event_type: event.kind().to_string(),
-            recorded_at_ms,
-            event: event.clone(),
-        };
+    async fn write_recorded_event(&mut self, event: &Event) -> Result<()> {
+        let payload = RecordedEvent::new(event.clone());
         let mut line = serde_json::to_vec(&payload)?;
         line.push(b'\n');
-        self.writer.write_all(&line).await?;
+        self.writer.write_all(&line).await
+            .context("failed to write recorded event")?;
         self.event_count += 1;
         Ok(())
     }
@@ -106,26 +102,43 @@ impl Recorder {
                     }
                     received = receiver.recv() => {
                         match received {
-                            Ok(event) => self.record(&event).await?,
-                            Err(RecvError::Lagged(_)) => continue,
+                            Ok(event) => {
+                                if let Err(e) = self.record(&event).await {
+                                    logger::recorder_failure(&e.to_string(), &self.session_id);
+                                }
+                            }
+                            Err(RecvError::Lagged(n)) => {
+                                logger::warn(&format!("recorder lagged, missed {n} events"));
+                            }
                             Err(RecvError::Closed) => break,
                         }
                     }
                 }
             } else {
                 match receiver.recv().await {
-                    Ok(event) => self.record(&event).await?,
-                    Err(RecvError::Lagged(_)) => continue,
+                    Ok(event) => {
+                        if let Err(e) = self.record(&event).await {
+                            logger::recorder_failure(&e.to_string(), &self.session_id);
+                        }
+                    }
+                    Err(RecvError::Lagged(n)) => {
+                        logger::warn(&format!("recorder lagged, missed {n} events"));
+                    }
                     Err(RecvError::Closed) => break,
                 }
             }
         }
 
-        self.stop().await
+        let session_id = self.session_id.clone();
+        let status = self.stop().await?;
+        logger::recorder_stop(&session_id, status.event_count);
+        Ok(status)
     }
 
     pub async fn flush(&mut self) -> Result<()> {
-        self.writer.flush().await?;
+        self.writer.flush()
+            .await
+            .context("failed to flush writer")?;
         Ok(())
     }
 
@@ -294,6 +307,7 @@ struct ParsedRecordingLine {
 }
 
 fn parse_recording_line(line: &str) -> Result<ParsedRecordingLine> {
+    // Try new versioned format first
     if let Ok(recorded) = serde_json::from_str::<RecordedEvent>(line) {
         let event_kind = match recorded.event {
             Event::AlertEvent(_) => RecordingEventKind::Alert,
@@ -304,11 +318,12 @@ fn parse_recording_line(line: &str) -> Result<ParsedRecordingLine> {
         };
 
         return Ok(ParsedRecordingLine {
-            recorded_at_ms: recorded.recorded_at_ms,
+            recorded_at_ms: recorded.timestamp_ms,
             event_kind,
         });
     }
 
+    // Fallback to legacy RecordedTelemetry format
     let recorded = serde_json::from_str::<RecordedTelemetry>(line)?;
     let event_kind = match recorded.event {
         TelemetryEvent::Alert(_) => RecordingEventKind::Alert,
@@ -449,15 +464,6 @@ mod tests {
         assert_eq!(summary.igor_count, None);
     }
 
-    fn recorded_event(recorded_at_ms: u64, event: TelemetryEvent) -> RecordedTelemetry {
-        RecordedTelemetry {
-            session_id: "session-1".to_string(),
-            event_type: event.kind().to_string(),
-            recorded_at_ms,
-            event,
-        }
-    }
-
     #[test]
     fn list_recordings_summarizes_canonical_event_logs() {
         let temp_dir = tempdir().expect("temp dir should be created");
@@ -467,9 +473,8 @@ mod tests {
 
         let events = vec![
             RecordedEvent {
-                session_id: "session-2".to_string(),
-                event_type: "sweep_data".to_string(),
-                recorded_at_ms: 100,
+                schema_version: 1,
+                timestamp_ms: 100,
                 event: Event::SweepData(crate::models::SweepData {
                     sequence: 1,
                     captured_at_ms: 100,
@@ -482,15 +487,13 @@ mod tests {
                 }),
             },
             RecordedEvent {
-                session_id: "session-2".to_string(),
-                event_type: "occupancy_update".to_string(),
-                recorded_at_ms: 200,
+                schema_version: 1,
+                timestamp_ms: 200,
                 event: Event::OccupancyUpdate(OccupancyUpdate::default()),
             },
             RecordedEvent {
-                session_id: "session-2".to_string(),
-                event_type: "alert_event".to_string(),
-                recorded_at_ms: 300,
+                schema_version: 1,
+                timestamp_ms: 300,
                 event: Event::AlertEvent(AlertEvent {
                     id: "alert-1".to_string(),
                     alert_type: "power_spike".to_string(),
@@ -504,9 +507,8 @@ mod tests {
                 }),
             },
             RecordedEvent {
-                session_id: "session-2".to_string(),
-                event_type: "igor_analysis".to_string(),
-                recorded_at_ms: 400,
+                schema_version: 1,
+                timestamp_ms: 400,
                 event: Event::IgorAnalysis(IgorAnalysis {
                     id: "igor-1".to_string(),
                     generated_at_ms: 400,
@@ -540,5 +542,14 @@ mod tests {
         assert_eq!(summary.event_count, Some(4));
         assert_eq!(summary.alert_count, Some(1));
         assert_eq!(summary.igor_count, Some(1));
+    }
+
+    fn recorded_event(recorded_at_ms: u64, event: TelemetryEvent) -> RecordedTelemetry {
+        RecordedTelemetry {
+            session_id: "session-1".to_string(),
+            event_type: event.kind().to_string(),
+            recorded_at_ms,
+            event,
+        }
     }
 }

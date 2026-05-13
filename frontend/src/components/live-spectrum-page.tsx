@@ -123,7 +123,7 @@ export function LiveSpectrumPage() {
           tone="info"
           title="Recorded playback is driving the cockpit"
           message="Investigation mode is active. Use the threats workspace for session review or return to Capture Ops to stop playback."
-          action={{ href: "/threats?source=recorded", label: "Open investigations" }}
+          action={{ href: "/investigation?source=recorded", label: "Open investigations" }}
         />
       ) : null}
 
@@ -301,7 +301,7 @@ export function LiveSpectrumPage() {
                 {prioritizedAlerts.map((alert) => (
                   <Link
                     key={alert.id}
-                    href={`/threats?severity=${alert.severity}&incident=${alert.id}`}
+                    href={`/investigation?severity=${alert.severity}&incident=${alert.id}`}
                     className="group block border border-[var(--color-border-secondary)] bg-[var(--color-surface-subtle)] px-4 py-3 transition-all hover:border-[var(--color-accent)]/50 hover:bg-[var(--color-surface-hover)]"
                   >
                     <div className="flex items-start justify-between gap-4">
@@ -350,7 +350,7 @@ export function LiveSpectrumPage() {
                 {igorWatchlist.map((assessment) => (
                   <Link
                     key={assessment.id}
-                    href={`/threats?kind=${assessment.finding_kind}&incident=${assessment.id}`}
+                    href={`/investigation?kind=${assessment.finding_kind}&incident=${assessment.id}`}
                     className="group block border border-[var(--color-border-secondary)] bg-[var(--color-surface-subtle)] px-4 py-3 transition-all hover:border-[var(--color-accent)]/50 hover:bg-[var(--color-surface-hover)]"
                   >
                     <div className="flex items-start justify-between gap-4">
@@ -510,4 +510,3 @@ function ContextFact({ label, value }: { label: string; value: string }) {
     </div>
   );
 }
-

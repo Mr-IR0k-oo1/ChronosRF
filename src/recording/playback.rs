@@ -6,8 +6,9 @@ use tokio::fs::File;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::time::sleep;
 
-use crate::core::event_bus::EventBus;
+use crate::core::logger;
 use crate::models::{Event, RecordedEvent, RecordedTelemetry, TelemetryEvent};
+use crate::recording::migration;
 
 #[derive(Clone, Debug)]
 enum PlaybackItem {
@@ -18,7 +19,7 @@ enum PlaybackItem {
 impl PlaybackItem {
     fn recorded_at_ms(&self) -> u64 {
         match self {
-            Self::Canonical(item) => item.recorded_at_ms,
+            Self::Canonical(item) => item.timestamp_ms,
             Self::Legacy(item) => item.recorded_at_ms,
         }
     }
@@ -73,20 +74,60 @@ impl PlaybackSession {
         let reader = BufReader::new(file);
         let mut lines = reader.lines();
         let mut events = Vec::new();
+        let mut line_number = 0u64;
 
         while let Some(line) = lines.next_line().await? {
+            line_number += 1;
             if line.trim().is_empty() {
                 continue;
             }
 
-            let event = parse_playback_line(&line).with_context(|| {
-                format!(
-                    "failed to parse playback line in recording {}",
-                    file_path.display()
-                )
-            })?;
-            events.push(event);
+            match parse_playback_line(&line) {
+                Ok(event) => events.push(event),
+                Err(e) => {
+                    logger::warn(&format!(
+                        "skipping malformed line {} in {}: {e:#}",
+                        line_number,
+                        file_path.display()
+                    ));
+                }
+            }
         }
+
+        // Migrate legacy events to canonical format, dropping non-replayable ones
+        let events: Vec<PlaybackItem> = events
+            .into_iter()
+            .filter_map(|item| match item {
+                PlaybackItem::Legacy(legacy) => {
+                    match migration::migrate_legacy_event(&legacy) {
+                        Some(canonical) => Some(PlaybackItem::Canonical(canonical)),
+                        None => {
+                            logger::warn(&format!(
+                                "skipping non-replayable legacy event during migration"
+                            ));
+                            None
+                        }
+                    }
+                }
+                PlaybackItem::Canonical(event) => {
+                    match migration::normalize_recorded_event(event) {
+                        Some(normalized) => Some(PlaybackItem::Canonical(normalized)),
+                        None => {
+                            logger::warn(&format!(
+                                "skipping event that failed normalization"
+                            ));
+                            None
+                        }
+                    }
+                }
+            })
+            .collect();
+
+        logger::replay_start(
+            &file_path.display().to_string(),
+            speed,
+            events.len(),
+        );
 
         Ok(Self {
             file_path,
@@ -110,6 +151,10 @@ impl PlaybackSession {
         self.emitted_events
     }
 
+    pub fn total_events(&self) -> usize {
+        self.events.len()
+    }
+
     pub async fn next_event(&mut self) -> Result<Option<TelemetryEvent>> {
         let Some(event) = self.next_item().await? else {
             return Ok(None);
@@ -130,12 +175,14 @@ impl PlaybackSession {
         }
     }
 
-    pub async fn replay_into_bus(&mut self, event_bus: &EventBus) -> Result<u64> {
+    pub async fn replay_into_bus(&mut self, event_bus: &crate::core::event_bus::EventBus) -> Result<u64> {
         let mut emitted = 0u64;
         while let Some(event) = self.next_source_event().await? {
             event_bus.publish(event)?;
             emitted += 1;
         }
+
+        logger::replay_stop(&self.file_path.display().to_string(), emitted);
 
         Ok(emitted)
     }
@@ -163,14 +210,42 @@ impl PlaybackSession {
     }
 }
 
+/// Parse a playback line, auto-detecting between new versioned RecordedEvent
+/// and legacy RecordedTelemetry formats.
+///
+/// Schema detection strategy:
+/// 1. Try the new `RecordedEvent` format (has `schema_version` and `timestamp_ms`)
+/// 2. Fall back to legacy `RecordedTelemetry` format (has `session_id` and `recorded_at_ms`)
+/// 3. If both fail, return an error (logged and skipped by caller)
 fn parse_playback_line(line: &str) -> Result<PlaybackItem> {
+    // Phase 4: Try new versioned format first
     if let Ok(event) = serde_json::from_str::<RecordedEvent>(line) {
+        // Validate schema version is supported
+        if event.schema_version > crate::models::SCHEMA_VERSION {
+            logger::warn(&format!(
+                "schema version {} is newer than supported {}, attempting to deserialize anyway",
+                event.schema_version,
+                crate::models::SCHEMA_VERSION
+            ));
+        }
         return Ok(PlaybackItem::Canonical(event));
     }
 
-    Ok(PlaybackItem::Legacy(serde_json::from_str::<RecordedTelemetry>(
-        line,
-    )?))
+    // Fallback to legacy RecordedTelemetry format for backward compatibility
+    match serde_json::from_str::<RecordedTelemetry>(line) {
+        Ok(legacy) => Ok(PlaybackItem::Legacy(legacy)),
+        Err(e) => {
+            // Check if it might be a raw Event (very old format without wrapper)
+            if let Ok(_raw_event) = serde_json::from_str::<Event>(line) {
+                // Raw events without wrapper are not supported directly;
+                // they need to be migrated. Log and skip.
+                anyhow::bail!(
+                    "detected raw unwrapped event format (unsupported): {e}"
+                );
+            }
+            anyhow::bail!("neither versioned nor legacy format matched: {e}");
+        }
+    }
 }
 
 #[cfg(test)]
@@ -190,16 +265,14 @@ mod tests {
         let file_path = temp_dir.path().join("canonical.jsonl");
         let lines = vec![
             serde_json::to_string(&RecordedEvent {
-                session_id: "session".to_string(),
-                event_type: "sweep_data".to_string(),
-                recorded_at_ms: 100,
+                schema_version: 1,
+                timestamp_ms: 100,
                 event: Event::SweepData(sample_sweep(1, 100)),
             })
             .expect("event should serialize"),
             serde_json::to_string(&RecordedEvent {
-                session_id: "session".to_string(),
-                event_type: "alert_event".to_string(),
-                recorded_at_ms: 120,
+                schema_version: 1,
+                timestamp_ms: 120,
                 event: Event::AlertEvent(crate::models::AlertEvent {
                     id: "alert-1".to_string(),
                     alert_type: "power_spike".to_string(),
@@ -214,9 +287,8 @@ mod tests {
             })
             .expect("event should serialize"),
             serde_json::to_string(&RecordedEvent {
-                session_id: "session".to_string(),
-                event_type: "sweep_data".to_string(),
-                recorded_at_ms: 200,
+                schema_version: 1,
+                timestamp_ms: 200,
                 event: Event::SweepData(sample_sweep(2, 200)),
             })
             .expect("event should serialize"),
@@ -295,6 +367,97 @@ mod tests {
             Event::SweepData(sweep) => assert_eq!(sweep.sequence, 1),
             other => panic!("expected sweep replay event, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn playback_skips_malformed_lines() {
+        let temp_dir = tempdir().expect("temp dir should be created");
+        let file_path = temp_dir.path().join("mixed.jsonl");
+        let content = format!(
+            "{}\n{{invalid_json}}\n{}\n",
+            serde_json::to_string(&RecordedEvent {
+                schema_version: 1,
+                timestamp_ms: 100,
+                event: Event::SweepData(sample_sweep(1, 100)),
+            })
+            .unwrap(),
+            serde_json::to_string(&RecordedEvent {
+                schema_version: 1,
+                timestamp_ms: 200,
+                event: Event::SweepData(sample_sweep(2, 200)),
+            })
+            .unwrap(),
+        );
+        fs::write(&file_path, content).expect("test file should be written");
+
+        let session = PlaybackSession::open(&file_path, 10_000.0)
+            .await
+            .expect("playback should open");
+
+        // Should load 2 valid events, skip 1 malformed line
+        assert_eq!(session.total_events(), 2);
+    }
+
+    #[tokio::test]
+    async fn playback_handles_legacy_and_canonical_mixed() {
+        let temp_dir = tempdir().expect("temp dir should be created");
+        let file_path = temp_dir.path().join("mixed.jsonl");
+        let content = format!(
+            "{}\n{}\n",
+            serde_json::to_string(&RecordedTelemetry {
+                session_id: "legacy".to_string(),
+                event_type: "sweep".to_string(),
+                recorded_at_ms: 100,
+                event: TelemetryEvent::Sweep(sample_sweep(1, 100)),
+            })
+            .unwrap(),
+            serde_json::to_string(&RecordedEvent {
+                schema_version: 1,
+                timestamp_ms: 200,
+                event: Event::SweepData(sample_sweep(2, 200)),
+            })
+            .unwrap(),
+        );
+        fs::write(&file_path, content).expect("test file should be written");
+
+        let mut session = PlaybackSession::open(&file_path, 10_000.0)
+            .await
+            .expect("playback should open");
+
+        assert_eq!(session.total_events(), 2);
+
+        let first = session
+            .next_source_event()
+            .await
+            .expect("first should succeed");
+        let second = session
+            .next_source_event()
+            .await
+            .expect("second should succeed");
+
+        assert!(matches!(first, Some(Event::SweepData(s)) if s.sequence == 1));
+        assert!(matches!(second, Some(Event::SweepData(s)) if s.sequence == 2));
+    }
+
+    #[tokio::test]
+    async fn new_schema_version_field_preserved() {
+        let event = RecordedEvent {
+            schema_version: 1,
+            timestamp_ms: 1234567890,
+            event: Event::SweepData(sample_sweep(1, 100)),
+        };
+        let json = serde_json::to_string(&event).expect("should serialize");
+        let deserialized: RecordedEvent =
+            serde_json::from_str(&json).expect("should deserialize");
+        assert_eq!(deserialized.schema_version, 1);
+        assert_eq!(deserialized.timestamp_ms, 1234567890);
+    }
+
+    #[tokio::test]
+    async fn recorded_event_new_constructor_sets_current_schema_version() {
+        let event = Event::SweepData(sample_sweep(1, 100));
+        let recorded = RecordedEvent::new(event);
+        assert_eq!(recorded.schema_version, crate::models::SCHEMA_VERSION);
     }
 
     fn sample_sweep(sequence: u64, captured_at_ms: u64) -> SweepData {

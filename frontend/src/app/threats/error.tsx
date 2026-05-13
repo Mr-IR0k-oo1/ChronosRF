@@ -10,8 +10,8 @@ export default function Error({
 }) {
   return (
     <RouteErrorState
-      title="Investigation workspace failed to load"
-      message="Threat history could not be assembled from the current snapshot. Retry after the telemetry feed stabilizes."
+      title="Threat workspace failed to load"
+      message="The active threat queue could not be assembled from the current snapshot. Retry after the telemetry feed stabilizes."
       onRetry={reset}
     />
   );

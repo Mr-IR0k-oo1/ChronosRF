@@ -1,0 +1,11 @@
+cargo:rerun-if-changed=build.rs
+cargo:rustc-check-cfg=cfg(has_liquid_dsp)
+cargo:rerun-if-env-changed=CARGO_FEATURE_NATIVE_DSP
+cargo:rerun-if-env-changed=LIQUID_DSP_HEADER
+cargo:rerun-if-env-changed=LIQUID_DSP_INCLUDE_DIR
+cargo:rerun-if-env-changed=LIQUID_DSP_LIB_DIR
+cargo:rerun-if-env-changed=LIQUID_DSP_LIB_NAME
+cargo:rerun-if-env-changed=LIQUID_DSP_LINK_KIND
+cargo:rerun-if-env-changed=INCLUDE
+cargo:rerun-if-env-changed=LIB
+cargo:rerun-if-env-changed=MSYSTEM_PREFIX
